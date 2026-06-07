@@ -1,7 +1,8 @@
 import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk';
-import { type Context, InlineKeyboard } from 'grammy';
+import { InlineKeyboard } from 'grammy';
 import { z } from 'zod';
 import { escapeHtml } from './format.js';
+import type { RunningView } from './sessions.js';
 
 interface AskEntry {
   resolve: (choice: string) => void;
@@ -12,8 +13,8 @@ interface AskEntry {
 
 /** Pending tg_ask questions, keyed by a short id carried in callback_data. */
 const askPending = new Map<string, AskEntry>();
-/** Quick-reply payloads: button id -> text to re-send as the user's next turn. */
-const quickReplies = new Map<string, string>();
+/** Quick-reply payloads: button id -> text + the session key to run it against. */
+const quickReplies = new Map<string, { text: string; key: string }>();
 
 let seq = 0;
 const nextId = () => (++seq).toString(36);
@@ -31,17 +32,18 @@ export function resolveAsk(
   return { question: entry.question, chosen, messageId: entry.messageId };
 }
 
-/** Pop the text behind a quick-reply button, if still live. */
-export function takeQuickReply(id: string): string | undefined {
-  const text = quickReplies.get(id);
-  if (text !== undefined) quickReplies.delete(id);
-  return text;
+/** Pop the text + target session behind a quick-reply button, if still live. */
+export function takeQuickReply(id: string): { text: string; key: string } | undefined {
+  const entry = quickReplies.get(id);
+  if (entry !== undefined) quickReplies.delete(id);
+  return entry;
 }
 
 const INSTRUCTIONS = `You reach the user through a Telegram chat. Your normal reply text is shown to them rendered as Markdown. In addition, you have two tools to compose the Telegram UI directly — use them to present information in whatever shape fits best.
 
 - telegram · send — deliver a message written in raw Telegram HTML, optionally with inline buttons. Use it when plain prose can't express the layout: an expandable detail section <blockquote expandable>…</blockquote>, a spoiler <tg-spoiler>…</tg-spoiler>, code <pre><code>…</code></pre>, a link button to a PR/file, or a compact menu.
-- telegram · ask — pose a question with tappable options and wait for the answer. Use it to branch on a decision instead of guessing (which file, which branch, proceed or not).
+- telegram · ask — pose a single quick question with tappable options and wait for the answer. Use it to branch on one decision instead of guessing (which file, which branch, proceed or not).
+- telegram · askUserQuestion — ask up to 4 decisions at once, each option carrying a one-line explanation, rendered as tappable buttons. This is how you ask structured questions here. The built-in AskUserQuestion tool does NOT work in this chat — always use this instead.
 
 Rules:
 - For an ordinary answer, just reply normally. Do NOT also send the same text via 'send' — that double-posts. Use 'send' for the things prose can't do.
@@ -51,8 +53,8 @@ Rules:
 - Be inventive with presentation, but keep it readable on a phone.`;
 
 /** Build the per-session Telegram UI tool server passed into a query(). */
-export function buildUiServer(ctx: Context, chatId: number, threadId?: number) {
-  const thread = threadId !== undefined ? { message_thread_id: threadId } : {};
+export function buildUiServer(view: RunningView) {
+  const { api, chatId } = view;
   const send = tool(
     'send',
     "Send a richly formatted Telegram message (raw Telegram HTML) with optional inline buttons. Use when prose can't express the layout you want.",
@@ -87,7 +89,7 @@ export function buildUiServer(ctx: Context, chatId: number, threadId?: number) {
           if (b.url) keyboard.url(b.text, b.url);
           else if (b.reply) {
             const id = nextId();
-            quickReplies.set(id, b.reply);
+            quickReplies.set(id, { text: b.reply, key: view.key });
             keyboard.text(b.text, `qr:${id}`);
           } else {
             keyboard.text(b.text, 'noop');
@@ -95,10 +97,10 @@ export function buildUiServer(ctx: Context, chatId: number, threadId?: number) {
         }
         keyboard.row();
       }
+      const prefix = view.isAttached() ? '' : `<b>${escapeHtml(view.title)}</b> · `;
       try {
-        await ctx.api.sendMessage(chatId, args.html, {
+        await api.sendMessage(chatId, `${prefix}${args.html}`, {
           parse_mode: 'HTML',
-          ...thread,
           ...(hasButtons ? { reply_markup: keyboard } : {}),
         });
         return { content: [{ type: 'text' as const, text: 'Message delivered.' }] };
@@ -112,41 +114,103 @@ export function buildUiServer(ctx: Context, chatId: number, threadId?: number) {
     },
   );
 
+  // Pose one question with tappable options (and an Other escape hatch) and
+  // block until the user picks. `body` is extra HTML shown under the question.
+  const askOne = async (question: string, optionLabels: string[], body = ''): Promise<string> => {
+    const id = nextId();
+    const keyboard = new InlineKeyboard();
+    optionLabels.forEach((opt, i) => {
+      keyboard.text(opt.slice(0, 64), `ask:${id}:${i}`);
+      if (i % 2 === 1) keyboard.row();
+    });
+    const prefix = view.isAttached() ? '' : `<b>${escapeHtml(view.title)}</b> · `;
+    const msg = await api.sendMessage(
+      chatId,
+      `${prefix}❓ <b>${escapeHtml(question)}</b>${body}`,
+      { parse_mode: 'HTML', reply_markup: keyboard },
+    );
+    return new Promise<string>((resolve) => {
+      const timeout = setTimeout(() => {
+        askPending.delete(id);
+        resolve('(user did not answer in time)');
+      }, 10 * 60 * 1000);
+      askPending.set(id, {
+        resolve: (c) => {
+          clearTimeout(timeout);
+          resolve(c);
+        },
+        options: optionLabels,
+        question,
+        messageId: msg.message_id,
+      });
+    });
+  };
+
   const ask = tool(
     'ask',
-    'Ask the user a question with tappable options. Blocks until they choose, then returns the chosen option text. Use to branch on a decision instead of guessing.',
+    'Ask ONE quick question with tappable options. Blocks until they choose, then returns the chosen option text. For richer decisions (several questions, or options that need a one-line explanation), use askUserQuestion instead.',
     {
       question: z.string(),
       options: z.array(z.string()).min(1).max(8).describe('Up to 8 short button labels'),
     },
     async (args) => {
-      const id = nextId();
-      const keyboard = new InlineKeyboard();
-      args.options.forEach((opt, i) => {
-        keyboard.text(opt.slice(0, 64), `ask:${id}:${i}`);
-        if (i % 2 === 1) keyboard.row();
-      });
-      const msg = await ctx.api.sendMessage(chatId, `❓ <b>${escapeHtml(args.question)}</b>`, {
-        parse_mode: 'HTML',
-        ...thread,
-        reply_markup: keyboard,
-      });
-      const choice = await new Promise<string>((resolve) => {
-        const timeout = setTimeout(() => {
-          askPending.delete(id);
-          resolve('(user did not answer in time)');
-        }, 10 * 60 * 1000);
-        askPending.set(id, {
-          resolve: (c) => {
-            clearTimeout(timeout);
-            resolve(c);
-          },
-          options: args.options,
-          question: args.question,
-          messageId: msg.message_id,
-        });
-      });
+      await view.block(
+        'asked',
+        `❓ <b>${escapeHtml(view.title)}</b> is waiting on a question — tap to answer.`,
+      );
+      const choice = await askOne(args.question, args.options);
+      view.unblock();
       return { content: [{ type: 'text' as const, text: choice }] };
+    },
+  );
+
+  const askUserQuestion = tool(
+    'askUserQuestion',
+    'Ask the user up to 4 decisions at once, each with 2-4 explained options, rendered as tappable buttons. Use this to gather requirements or branch on choices instead of guessing. Returns the chosen answers. This is the way to ask structured questions in this chat — the built-in AskUserQuestion tool does not work here.',
+    {
+      questions: z
+        .array(
+          z.object({
+            question: z.string().describe('The full question, ending with a question mark'),
+            header: z.string().optional().describe('Very short label (≤12 chars) for the topic'),
+            options: z
+              .array(
+                z.object({
+                  label: z.string().describe('Short choice label (1-5 words, shown on the button)'),
+                  description: z.string().optional().describe('One-line explanation of this choice'),
+                  preview: z.string().optional(),
+                }),
+              )
+              .min(2)
+              .max(4),
+            multiSelect: z.boolean().optional(),
+          }),
+        )
+        .min(1)
+        .max(4),
+    },
+    async (args) => {
+      await view.block(
+        'asked',
+        `❓ <b>${escapeHtml(view.title)}</b> is waiting on ${args.questions.length} question${
+          args.questions.length === 1 ? '' : 's'
+        } — tap to answer.`,
+      );
+      const answers: string[] = [];
+      for (const q of args.questions) {
+        const body = q.options
+          .map(
+            (o, i) =>
+              `\n${i + 1}. <b>${escapeHtml(o.label)}</b>${
+                o.description ? ` — ${escapeHtml(o.description)}` : ''
+              }`,
+          )
+          .join('');
+        const choice = await askOne(q.question, q.options.map((o) => o.label), body);
+        answers.push(`${q.header ?? q.question}: ${choice}`);
+      }
+      view.unblock();
+      return { content: [{ type: 'text' as const, text: answers.join('\n') }] };
     },
   );
 
@@ -154,6 +218,6 @@ export function buildUiServer(ctx: Context, chatId: number, threadId?: number) {
     name: 'telegram',
     version: '1.0.0',
     instructions: INSTRUCTIONS,
-    tools: [send, ask],
+    tools: [send, ask, askUserQuestion],
   });
 }

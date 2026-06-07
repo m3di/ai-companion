@@ -1,5 +1,6 @@
-import { type Context, InlineKeyboard } from 'grammy';
+import { InlineKeyboard } from 'grammy';
 import { describeTool, escapeHtml, SAFE_TOOLS } from './format.js';
+import type { RunningView } from './sessions.js';
 
 type Decision = 'allow' | 'always' | 'deny';
 type PermissionResult =
@@ -45,12 +46,13 @@ export function resolvePermission(data: string): boolean {
 }
 
 /**
- * Build a canUseTool callback bound to a chat. Safe/read-only tools and
- * session-approved tools pass through silently; everything else prompts the
- * user with inline Allow / Always / Deny buttons and waits for the tap.
+ * Build a canUseTool callback bound to one session's live view. Safe/read-only
+ * and session-approved tools pass through silently; everything else prompts with
+ * inline Allow / Always / Deny buttons and waits for the tap. A blocked
+ * background session surfaces a badge + one-line notice via the view.
  */
-export function createCanUseTool(ctx: Context, chatId: number, key: string) {
-  const approved = allowedFor(key);
+export function createCanUseTool(view: RunningView) {
+  const approved = allowedFor(view.key);
 
   return async (
     toolName: string,
@@ -68,8 +70,14 @@ export function createCanUseTool(ctx: Context, chatId: number, key: string) {
       .text(`♾️ Always allow ${toolName}`, `A:${id}`);
 
     const shown = detail || summary;
-    const prompt = await ctx.reply(
-      `🔐 <b>${escapeHtml(toolName)}</b> wants to run:\n` +
+    await view.block(
+      'needsPerm',
+      `❗ <b>${escapeHtml(view.title)}</b> needs permission for <b>${escapeHtml(toolName)}</b> — tap to review.`,
+    );
+    const prefix = view.isAttached() ? '' : `<b>${escapeHtml(view.title)}</b> · `;
+    const prompt = await view.api.sendMessage(
+      view.chatId,
+      `${prefix}🔐 <b>${escapeHtml(toolName)}</b> wants to run:\n` +
         `<blockquote expandable>${escapeHtml(shown)}</blockquote>`,
       { parse_mode: 'HTML', reply_markup: keyboard },
     );
@@ -90,6 +98,7 @@ export function createCanUseTool(ctx: Context, chatId: number, key: string) {
       });
     });
 
+    view.unblock();
     if (decision === 'always') approved.add(toolName);
 
     const verdict =
@@ -98,9 +107,9 @@ export function createCanUseTool(ctx: Context, chatId: number, key: string) {
         : decision === 'always'
           ? `♾️ Always allowing ${escapeHtml(toolName)}`
           : '✅ Allowed';
-    await ctx.api
+    await view.api
       .editMessageText(
-        chatId,
+        view.chatId,
         prompt.message_id,
         `${verdict} · <b>${escapeHtml(toolName)}</b>`,
         { parse_mode: 'HTML' },

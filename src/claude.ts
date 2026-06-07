@@ -46,6 +46,10 @@ export async function* askClaude(opts: {
     options: {
       resume: opts.resume,
       cwd: opts.cwd ?? config.workingDir,
+      // The built-in AskUserQuestion needs an interactive frontend we don't
+      // have here — it silently no-ops ("tool hiccup"). Remove it so the model
+      // falls back to our telegram askUserQuestion tool, which renders buttons.
+      disallowedTools: ['AskUserQuestion'],
       ...(opts.abortController ? { abortController: opts.abortController } : {}),
       permissionMode: opts.permissionMode ?? config.permissionMode,
       ...(opts.mcpServers ? { mcpServers: opts.mcpServers as never } : {}),

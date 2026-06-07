@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import { resolve } from 'node:path';
 
-export type PermissionMode = 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan';
+export type PermissionMode = 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan' | 'auto';
 
 function required(name: string): string {
   const value = process.env[name];

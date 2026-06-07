@@ -5,6 +5,18 @@ import { createBot } from './telegram.js';
 const bot = createBot();
 const me = await bot.api.getMe();
 
+await bot.api
+  .setMyCommands([
+    { command: 'new', description: 'Start another session' },
+    { command: 'sessions', description: 'Show the session keyboard' },
+    { command: 'close', description: 'Close the current session' },
+    { command: 'history', description: 'Reopen a closed session' },
+    { command: 'cancel', description: 'Stop the current session’s turn' },
+    { command: 'cwd', description: 'Show or set the working directory' },
+    { command: 'status', description: 'Current session info' },
+  ])
+  .catch(() => {});
+
 console.log(`[companion] working dir: ${config.workingDir}`);
 console.log(`[companion] default permission mode: ${config.permissionMode}`);
 console.log(

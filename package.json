@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "A Telegram bot that exposes a single Claude Code session, running locally.",
+  "description": "Drive Claude Code from Telegram — multiple concurrent sessions, switchable from a chat keyboard, running locally.",
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "start": "tsx src/index.ts",

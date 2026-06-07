@@ -53,6 +53,24 @@ db.exec(`
     permission_mode TEXT,
     cwd             TEXT
   );
+
+  -- Multiple logical sessions live inside one chat, each a numbered "slot".
+  -- The composite key "<chatId>:<slot>" indexes everything above; slot 0 is the
+  -- legacy default session, preserved on first contact (see ensureChat).
+  CREATE TABLE IF NOT EXISTS chat_sessions (
+    chat_id     INTEGER NOT NULL,
+    slot        INTEGER NOT NULL,
+    title       TEXT NOT NULL,
+    status      TEXT NOT NULL DEFAULT 'active',  -- 'active' | 'closed'
+    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    last_active TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (chat_id, slot)
+  );
+
+  CREATE TABLE IF NOT EXISTS chat_state (
+    chat_id     INTEGER PRIMARY KEY,
+    active_slot INTEGER NOT NULL DEFAULT 0
+  );
 `);
 
 const stmts = {
@@ -81,6 +99,39 @@ const stmts = {
   clearMode: db.prepare<[string]>(
     'UPDATE session_prefs SET permission_mode = NULL WHERE session_key = ?',
   ),
+  recentMessages: db.prepare<[string, number]>(
+    'SELECT role, content FROM messages WHERE session_key = ? ORDER BY id DESC LIMIT ?',
+  ),
+  // chat / slot management
+  listSessions: db.prepare<[number, string]>(
+    'SELECT slot, title, status FROM chat_sessions WHERE chat_id = ? AND status = ? ORDER BY slot',
+  ),
+  getSessionRow: db.prepare<[number, number]>(
+    'SELECT slot, title, status FROM chat_sessions WHERE chat_id = ? AND slot = ?',
+  ),
+  insertSession: db.prepare<[number, number, string]>(
+    "INSERT INTO chat_sessions (chat_id, slot, title) VALUES (?, ?, ?)",
+  ),
+  maxSlot: db.prepare<[number]>(
+    'SELECT MAX(slot) AS m FROM chat_sessions WHERE chat_id = ?',
+  ),
+  countSessions: db.prepare<[number, string]>(
+    'SELECT COUNT(*) AS n FROM chat_sessions WHERE chat_id = ? AND status = ?',
+  ),
+  setSessionStatus: db.prepare<[string, number, number]>(
+    'UPDATE chat_sessions SET status = ? WHERE chat_id = ? AND slot = ?',
+  ),
+  setSessionTitle: db.prepare<[string, number, number]>(
+    'UPDATE chat_sessions SET title = ? WHERE chat_id = ? AND slot = ?',
+  ),
+  touchSession: db.prepare<[number, number]>(
+    "UPDATE chat_sessions SET last_active = datetime('now') WHERE chat_id = ? AND slot = ?",
+  ),
+  getActiveSlot: db.prepare<[number]>('SELECT active_slot FROM chat_state WHERE chat_id = ?'),
+  setActiveSlot: db.prepare<[number, number]>(`
+    INSERT INTO chat_state (chat_id, active_slot) VALUES (?, ?)
+    ON CONFLICT(chat_id) DO UPDATE SET active_slot = excluded.active_slot
+  `),
 };
 
 export function getSessionId(key: string): string | undefined {
@@ -129,4 +180,65 @@ export function setCwd(key: string, cwd: string): void {
 /** Clear only the permission mode (kept on /new so the mode is re-asked). */
 export function clearMode(key: string): void {
   stmts.clearMode.run(key);
+}
+
+/** Most recent messages for a session, oldest-first (for catch-up on attach). */
+export function recentMessages(
+  key: string,
+  limit: number,
+): Array<{ role: string; content: string }> {
+  const rows = stmts.recentMessages.all(key, limit) as Array<{ role: string; content: string }>;
+  return rows.reverse();
+}
+
+export interface ChatSession {
+  slot: number;
+  title: string;
+  status: 'active' | 'closed';
+}
+
+/** The composite key under which a session's state, prefs, and log are stored. */
+export function sessionKey(chatId: number, slot: number): string {
+  return `${chatId}:${slot}`;
+}
+
+export function listSessions(chatId: number, status: 'active' | 'closed'): ChatSession[] {
+  return stmts.listSessions.all(chatId, status) as ChatSession[];
+}
+
+export function getSession(chatId: number, slot: number): ChatSession | undefined {
+  return stmts.getSessionRow.get(chatId, slot) as ChatSession | undefined;
+}
+
+export function countSessions(chatId: number, status: 'active' | 'closed'): number {
+  return (stmts.countSessions.get(chatId, status) as { n: number }).n;
+}
+
+/** Create a new session slot in a chat and return its number. */
+export function createSession(chatId: number, title: string): number {
+  const max = (stmts.maxSlot.get(chatId) as { m: number | null }).m;
+  const slot = max === null ? 0 : max + 1;
+  stmts.insertSession.run(chatId, slot, title);
+  return slot;
+}
+
+export function setSessionStatus(chatId: number, slot: number, status: 'active' | 'closed'): void {
+  stmts.setSessionStatus.run(status, chatId, slot);
+}
+
+export function setSessionTitle(chatId: number, slot: number, title: string): void {
+  stmts.setSessionTitle.run(title, chatId, slot);
+}
+
+export function touchSession(chatId: number, slot: number): void {
+  stmts.touchSession.run(chatId, slot);
+}
+
+export function getActiveSlot(chatId: number): number | undefined {
+  const row = stmts.getActiveSlot.get(chatId) as { active_slot: number } | undefined;
+  return row?.active_slot;
+}
+
+export function setActiveSlot(chatId: number, slot: number): void {
+  stmts.setActiveSlot.run(chatId, slot);
 }

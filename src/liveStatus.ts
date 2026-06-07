@@ -117,10 +117,20 @@ export class LiveStatus {
       `${this.header}\n<i>${count} action${count === 1 ? '' : 's'}</i>` +
       `\n<blockquote expandable>${this.log.map((l) => escapeHtml(l)).join('\n')}</blockquote>`;
     await this.ctx.api
-      .editMessageText(this.chatId, this.messageId, text, {
-        parse_mode: 'HTML',
-        reply_markup: keyboard,
-      })
+      .editMessageText(this.chatId, this.messageId, text, { parse_mode: 'HTML', reply_markup: keyboard })
+      .catch(() => {});
+  }
+
+  /** Stop updating and leave the message in a fixed state (used on detach). */
+  async freeze(html: string): Promise<void> {
+    this.done = true;
+    if (this.timer) {
+      clearTimeout(this.timer);
+      this.timer = undefined;
+    }
+    if (this.messageId === undefined) return;
+    await this.ctx.api
+      .editMessageText(this.chatId, this.messageId, html, { parse_mode: 'HTML' })
       .catch(() => {});
   }
 }

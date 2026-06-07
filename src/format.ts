@@ -16,6 +16,7 @@ export const SAFE_TOOLS = new Set([
   // Our own in-process Telegram UI tools — always safe.
   'mcp__telegram__send',
   'mcp__telegram__ask',
+  'mcp__telegram__askUserQuestion',
 ]);
 
 export function escapeHtml(s: string): string {
