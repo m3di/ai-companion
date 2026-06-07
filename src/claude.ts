@@ -1,12 +1,20 @@
 import { readFileSync } from 'node:fs';
 import { query } from '@anthropic-ai/claude-agent-sdk';
-import { config } from './config.js';
+import { config, type PermissionMode } from './config.js';
 
 export type ClaudeEvent =
   | { kind: 'session'; sessionId: string }
   | { kind: 'text'; text: string }
-  | { kind: 'tool'; name: string }
+  | { kind: 'tool'; name: string; input: Record<string, unknown> }
   | { kind: 'result'; ok: boolean; error?: string };
+
+type CanUseTool = (
+  toolName: string,
+  input: Record<string, unknown>,
+  options: { signal: AbortSignal },
+) => Promise<
+  { behavior: 'allow'; updatedInput?: Record<string, unknown> } | { behavior: 'deny'; message: string }
+>;
 
 function readSystemPrompt(): string {
   try {
@@ -20,11 +28,13 @@ function readSystemPrompt(): string {
  * Runs one user turn against Claude Code and yields normalized events.
  * Pass `resume` (a session id) to continue an existing conversation; omit it
  * to start a fresh session. The system prompt file is read on every call so
- * edits take effect immediately.
+ * edits take effect immediately. `canUseTool` gates tool execution.
  */
 export async function* askClaude(opts: {
   prompt: string;
   resume?: string;
+  canUseTool?: CanUseTool;
+  permissionMode?: PermissionMode;
 }): AsyncGenerator<ClaudeEvent> {
   const append = readSystemPrompt();
 
@@ -33,7 +43,8 @@ export async function* askClaude(opts: {
     options: {
       resume: opts.resume,
       cwd: config.workingDir,
-      permissionMode: config.permissionMode,
+      permissionMode: opts.permissionMode ?? config.permissionMode,
+      ...(opts.canUseTool ? { canUseTool: opts.canUseTool } : {}),
       ...(config.model ? { model: config.model } : {}),
       systemPrompt: { type: 'preset', preset: 'claude_code', append },
     },
@@ -49,7 +60,7 @@ export async function* askClaude(opts: {
         if (block.type === 'text' && block.text?.trim()) {
           yield { kind: 'text', text: block.text };
         } else if (block.type === 'tool_use') {
-          yield { kind: 'tool', name: block.name };
+          yield { kind: 'tool', name: block.name, input: block.input ?? {} };
         }
       }
     } else if (msg.type === 'result') {

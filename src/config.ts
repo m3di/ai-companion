@@ -23,7 +23,7 @@ export const config = {
   telegramToken: required('TELEGRAM_BOT_TOKEN'),
   allowedChatIds: parseChatIds(process.env.ALLOWED_CHAT_IDS),
   workingDir: resolve(process.env.CLAUDE_WORKING_DIR || process.cwd()),
-  permissionMode: (process.env.PERMISSION_MODE || 'acceptEdits') as PermissionMode,
+  permissionMode: (process.env.PERMISSION_MODE || 'default') as PermissionMode,
   model: process.env.CLAUDE_MODEL || undefined,
   systemPromptPath: resolve(process.env.SYSTEM_PROMPT_PATH || 'prompts/system.md'),
   dbPath: resolve(process.env.DB_PATH || 'data/companion.db'),
