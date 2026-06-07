@@ -4,10 +4,14 @@ import { Bot, type Context, InlineKeyboard } from 'grammy';
 import { config, type PermissionMode } from './config.js';
 import { askClaude } from './claude.js';
 import {
+  clearMode,
   clearSession,
+  getPrefs,
   getSessionId,
   logMessage,
   messageCount,
+  setCwd,
+  setMode,
   setSessionId,
 } from './db.js';
 import { chunkRaw, describeTool, escapeHtml, toTelegramMarkdown } from './format.js';
@@ -32,10 +36,14 @@ function targetOf(ctx: Context): Target {
   return { chatId, threadId, key: `${chatId}:${threadId ?? 0}` };
 }
 
-// Per-session state (in memory, cleared on /new). Keyed by Target.key.
-const sessionMode = new Map<string, PermissionMode>();
-const sessionCwd = new Map<string, string>();
+// Permission mode + working dir are persisted in SQLite (see db.ts) so they
+// survive bot restarts — the session only re-asks on a new session or /new.
+// pendingPrompt is transient: a message held while we wait for the mode pick.
 const pendingPrompt = new Map<string, string>();
+
+function getMode(key: string): PermissionMode | undefined {
+  return getPrefs(key).permissionMode as PermissionMode | undefined;
+}
 
 // Per-session turn serialization: one running turn per session, the rest queue.
 // Button taps are handled outside this lock so approvals never deadlock.
@@ -122,12 +130,13 @@ async function sendAnswer(ctx: Context, text: string): Promise<void> {
 
 function statusText(target: Target): string {
   const sessionId = getSessionId(target.key);
-  const mode = sessionMode.get(target.key);
+  const prefs = getPrefs(target.key);
+  const mode = prefs.permissionMode;
   return (
     `Session key: ${target.key}\n` +
     `Claude session: ${sessionId ?? 'none (starts on next message)'}\n` +
     `Permission mode: ${mode ? MODE_LABEL[mode] ?? mode : 'not chosen yet'}\n` +
-    `Working dir: ${sessionCwd.get(target.key) ?? config.workingDir}\n` +
+    `Working dir: ${prefs.cwd ?? config.workingDir}\n` +
     `Messages logged: ${messageCount(target.key)}`
   );
 }
@@ -135,9 +144,9 @@ function statusText(target: Target): string {
 function startFresh(key: string): void {
   clearSession(key);
   resetAutoAllow(key);
-  sessionMode.delete(key);
+  clearMode(key);
   pendingPrompt.delete(key);
-  // sessionCwd is intentionally kept — a topic's workspace survives /new.
+  // The persisted cwd is intentionally kept — a topic's workspace survives /new.
 }
 
 /** Run one user turn against Claude Code, rendering progress + answers. */
@@ -156,8 +165,9 @@ async function runTurn(
   const status = new LiveStatus(ctx, target.chatId);
   await status.start(stopKeyboard());
   const canUseTool = createCanUseTool(ctx, target.chatId, target.key);
-  const permissionMode = sessionMode.get(target.key) ?? config.permissionMode;
-  const cwd = sessionCwd.get(target.key) ?? config.workingDir;
+  const prefs = getPrefs(target.key);
+  const permissionMode = (prefs.permissionMode as PermissionMode) ?? config.permissionMode;
+  const cwd = prefs.cwd ?? config.workingDir;
   const mcpServers = { telegram: buildUiServer(ctx, target.chatId, target.threadId) };
   const abortController = new AbortController();
   running.set(target.key, abortController);
@@ -281,11 +291,11 @@ export function createBot(): Bot {
     const arg = ctx.match.trim();
     if (!arg) {
       return ctx.reply(
-        `Working dir: ${sessionCwd.get(target.key) ?? config.workingDir}\nSet with /cwd <path>`,
+        `Working dir: ${getPrefs(target.key).cwd ?? config.workingDir}\nSet with /cwd <path>`,
       );
     }
     const dir = expandPath(arg);
-    sessionCwd.set(target.key, dir);
+    setCwd(target.key, dir);
     return ctx.reply(`📁 Working dir for this session: ${dir}`);
   });
 
@@ -299,7 +309,7 @@ export function createBot(): Bot {
     // Permission mode chosen for a fresh session.
     if (data.startsWith('mode:')) {
       const mode = data.slice('mode:'.length) as PermissionMode;
-      sessionMode.set(target.key, mode);
+      setMode(target.key, mode);
       await ctx.answerCallbackQuery(`Mode: ${MODE_LABEL[mode] ?? mode}`);
       await ctx
         .editMessageText(`Permission mode: <b>${MODE_LABEL[mode] ?? mode}</b>`, { parse_mode: 'HTML' })
@@ -376,7 +386,7 @@ export function createBot(): Bot {
     logMessage(target.key, 'user', text);
 
     // First message of a fresh session: pick a permission mode, then run.
-    if (!sessionMode.has(target.key)) {
+    if (getMode(target.key) === undefined) {
       pendingPrompt.set(target.key, text);
       await askForMode(ctx);
       return;

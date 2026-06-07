@@ -47,6 +47,12 @@ db.exec(`
     content     TEXT NOT NULL,
     created_at  TEXT NOT NULL DEFAULT (datetime('now'))
   );
+
+  CREATE TABLE IF NOT EXISTS session_prefs (
+    session_key     TEXT PRIMARY KEY,
+    permission_mode TEXT,
+    cwd             TEXT
+  );
 `);
 
 const stmts = {
@@ -61,6 +67,20 @@ const stmts = {
     'INSERT INTO messages (session_key, role, content) VALUES (?, ?, ?)',
   ),
   countMessages: db.prepare<[string]>('SELECT COUNT(*) AS n FROM messages WHERE session_key = ?'),
+  getPrefs: db.prepare<[string]>(
+    'SELECT permission_mode, cwd FROM session_prefs WHERE session_key = ?',
+  ),
+  setMode: db.prepare<[string, string]>(`
+    INSERT INTO session_prefs (session_key, permission_mode) VALUES (?, ?)
+    ON CONFLICT(session_key) DO UPDATE SET permission_mode = excluded.permission_mode
+  `),
+  setCwd: db.prepare<[string, string]>(`
+    INSERT INTO session_prefs (session_key, cwd) VALUES (?, ?)
+    ON CONFLICT(session_key) DO UPDATE SET cwd = excluded.cwd
+  `),
+  clearMode: db.prepare<[string]>(
+    'UPDATE session_prefs SET permission_mode = NULL WHERE session_key = ?',
+  ),
 };
 
 export function getSessionId(key: string): string | undefined {
@@ -83,4 +103,30 @@ export function logMessage(key: string, role: 'user' | 'assistant', content: str
 export function messageCount(key: string): number {
   const row = stmts.countMessages.get(key) as { n: number };
   return row.n;
+}
+
+export interface SessionPrefs {
+  permissionMode?: string;
+  cwd?: string;
+}
+
+/** Persisted per-session preferences (permission mode, working dir). */
+export function getPrefs(key: string): SessionPrefs {
+  const row = stmts.getPrefs.get(key) as
+    | { permission_mode: string | null; cwd: string | null }
+    | undefined;
+  return { permissionMode: row?.permission_mode ?? undefined, cwd: row?.cwd ?? undefined };
+}
+
+export function setMode(key: string, mode: string): void {
+  stmts.setMode.run(key, mode);
+}
+
+export function setCwd(key: string, cwd: string): void {
+  stmts.setCwd.run(key, cwd);
+}
+
+/** Clear only the permission mode (kept on /new so the mode is re-asked). */
+export function clearMode(key: string): void {
+  stmts.clearMode.run(key);
 }
