@@ -35,6 +35,8 @@ export async function* askClaude(opts: {
   resume?: string;
   canUseTool?: CanUseTool;
   permissionMode?: PermissionMode;
+  mcpServers?: Record<string, unknown>;
+  cwd?: string;
 }): AsyncGenerator<ClaudeEvent> {
   const append = readSystemPrompt();
 
@@ -42,8 +44,9 @@ export async function* askClaude(opts: {
     prompt: opts.prompt,
     options: {
       resume: opts.resume,
-      cwd: config.workingDir,
+      cwd: opts.cwd ?? config.workingDir,
       permissionMode: opts.permissionMode ?? config.permissionMode,
+      ...(opts.mcpServers ? { mcpServers: opts.mcpServers as never } : {}),
       ...(opts.canUseTool ? { canUseTool: opts.canUseTool } : {}),
       ...(config.model ? { model: config.model } : {}),
       systemPrompt: { type: 'preset', preset: 'claude_code', append },

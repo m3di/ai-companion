@@ -1,3 +1,5 @@
+import { homedir } from 'node:os';
+import { resolve } from 'node:path';
 import { Bot, type Context, InlineKeyboard } from 'grammy';
 import { config, type PermissionMode } from './config.js';
 import { askClaude } from './claude.js';
@@ -8,14 +10,37 @@ import {
   messageCount,
   setSessionId,
 } from './db.js';
-import { chunkRaw, describeTool, toTelegramMarkdown } from './format.js';
+import { chunkRaw, describeTool, escapeHtml, toTelegramMarkdown } from './format.js';
 import { LiveStatus } from './liveStatus.js';
 import { createCanUseTool, resetAutoAllow, resolvePermission } from './permissions.js';
+import { buildUiServer, resolveAsk, takeQuickReply } from './ui.js';
 
-/** Chosen permission mode for the current session, per chat. Cleared on /new. */
-const sessionMode = new Map<number, PermissionMode>();
-/** A message held while we wait for the user to pick a mode, per chat. */
-const pendingPrompt = new Map<number, string>();
+/**
+ * A session target: one Telegram chat, or one forum topic within it. Each maps
+ * to an independent Claude Code session keyed by `<chatId>:<threadId>`.
+ */
+interface Target {
+  chatId: number;
+  threadId?: number;
+  key: string;
+}
+
+function targetOf(ctx: Context): Target {
+  const chatId = ctx.chat!.id;
+  const msg = ctx.msg;
+  const threadId = msg?.is_topic_message ? msg.message_thread_id : undefined;
+  return { chatId, threadId, key: `${chatId}:${threadId ?? 0}` };
+}
+
+// Per-session state (in memory, cleared on /new). Keyed by Target.key.
+const sessionMode = new Map<string, PermissionMode>();
+const sessionCwd = new Map<string, string>();
+const pendingPrompt = new Map<string, string>();
+
+// Per-session turn serialization: one running turn per session, the rest queue.
+// Button taps are handled outside this lock so approvals never deadlock.
+const busy = new Set<string>();
+const queues = new Map<string, Array<{ ctx: Context; text: string }>>();
 
 const MODE_LABEL: Record<string, string> = {
   auto: '⚡ Auto',
@@ -35,6 +60,10 @@ function actionKeyboard(): InlineKeyboard {
   return new InlineKeyboard().text('🆕 New session · clears memory', 'new');
 }
 
+function expandPath(p: string): string {
+  return resolve(p.startsWith('~') ? p.replace(/^~/, homedir()) : p);
+}
+
 async function askForMode(ctx: Context): Promise<void> {
   await ctx.reply(
     '🆕 <b>New session.</b> How should I handle permissions?\n\n' +
@@ -45,7 +74,6 @@ async function askForMode(ctx: Context): Promise<void> {
   );
 }
 
-/** Send Claude's Markdown answer, converted to MarkdownV2, split to fit. */
 async function sendAnswer(ctx: Context, text: string): Promise<void> {
   for (const piece of chunkRaw(text)) {
     try {
@@ -56,38 +84,42 @@ async function sendAnswer(ctx: Context, text: string): Promise<void> {
   }
 }
 
-function statusText(chatId: number): string {
-  const sessionId = getSessionId(chatId);
-  const mode = sessionMode.get(chatId);
+function statusText(target: Target): string {
+  const sessionId = getSessionId(target.key);
+  const mode = sessionMode.get(target.key);
   return (
-    `Session: ${sessionId ?? 'none (starts on next message)'}\n` +
+    `Session key: ${target.key}\n` +
+    `Claude session: ${sessionId ?? 'none (starts on next message)'}\n` +
     `Permission mode: ${mode ? MODE_LABEL[mode] ?? mode : 'not chosen yet'}\n` +
-    `Messages logged: ${messageCount(chatId)}\n` +
-    `Working dir: ${config.workingDir}`
+    `Working dir: ${sessionCwd.get(target.key) ?? config.workingDir}\n` +
+    `Messages logged: ${messageCount(target.key)}`
   );
 }
 
-function startFresh(chatId: number): void {
-  clearSession(chatId);
-  resetAutoAllow(chatId);
-  sessionMode.delete(chatId);
-  pendingPrompt.delete(chatId);
+function startFresh(key: string): void {
+  clearSession(key);
+  resetAutoAllow(key);
+  sessionMode.delete(key);
+  pendingPrompt.delete(key);
+  // sessionCwd is intentionally kept — a topic's workspace survives /new.
 }
 
 /** Run one user turn against Claude Code, rendering progress + answers. */
-async function runTurn(ctx: Context, chatId: number, text: string): Promise<void> {
-  const status = new LiveStatus(ctx, chatId);
+async function runTurn(ctx: Context, target: Target, text: string): Promise<void> {
+  const status = new LiveStatus(ctx, target.chatId);
   await status.start();
-  const canUseTool = createCanUseTool(ctx, chatId);
-  const permissionMode = sessionMode.get(chatId) ?? config.permissionMode;
+  const canUseTool = createCanUseTool(ctx, target.chatId, target.key);
+  const permissionMode = sessionMode.get(target.key) ?? config.permissionMode;
+  const cwd = sessionCwd.get(target.key) ?? config.workingDir;
+  const mcpServers = { telegram: buildUiServer(ctx, target.chatId, target.threadId) };
 
   let ok = true;
   try {
-    const resume = getSessionId(chatId);
-    for await (const ev of askClaude({ prompt: text, resume, canUseTool, permissionMode })) {
+    const resume = getSessionId(target.key);
+    for await (const ev of askClaude({ prompt: text, resume, canUseTool, permissionMode, cwd, mcpServers })) {
       switch (ev.kind) {
         case 'session':
-          setSessionId(chatId, ev.sessionId);
+          setSessionId(target.key, ev.sessionId);
           break;
         case 'tool': {
           const view = describeTool(ev.name, ev.input);
@@ -95,7 +127,7 @@ async function runTurn(ctx: Context, chatId: number, text: string): Promise<void
           break;
         }
         case 'text':
-          logMessage(chatId, 'assistant', ev.text);
+          logMessage(target.key, 'assistant', ev.text);
           await sendAnswer(ctx, ev.text);
           break;
         case 'result':
@@ -110,6 +142,29 @@ async function runTurn(ctx: Context, chatId: number, text: string): Promise<void
     await ctx.reply(`⚠️ Error: ${err instanceof Error ? err.message : String(err)}`);
   } finally {
     await status.finalize(ok, actionKeyboard());
+  }
+}
+
+/** Serialize turns per session: run now if idle, else queue. */
+async function enqueueTurn(ctx: Context, target: Target, text: string): Promise<void> {
+  if (busy.has(target.key)) {
+    const q = queues.get(target.key) ?? [];
+    q.push({ ctx, text });
+    queues.set(target.key, q);
+    await ctx.reply('⏳ Queued — running after the current task.');
+    return;
+  }
+  busy.add(target.key);
+  try {
+    await runTurn(ctx, target, text);
+    for (;;) {
+      const next = queues.get(target.key)?.shift();
+      if (!next) break;
+      await runTurn(next.ctx, target, next.text);
+    }
+  } finally {
+    busy.delete(target.key);
+    queues.delete(target.key);
   }
 }
 
@@ -131,38 +186,87 @@ export function createBot(): Bot {
 
   bot.command('start', (ctx) =>
     ctx.reply(
-      'Connected. This chat is a single Claude Code session.\n' +
-        '/new — start a fresh session (clears context + re-asks permission mode)\n' +
+      'Connected. This chat (or each forum topic) is one Claude Code session.\n' +
+        '/new — fresh session (clears context + re-asks permission mode)\n' +
+        '/cwd [path] — show or set this session’s working directory\n' +
         '/status — session info',
     ),
   );
 
   bot.command('new', async (ctx) => {
-    startFresh(ctx.chat.id);
+    const target = targetOf(ctx);
+    startFresh(target.key);
     await ctx.reply('🔄 Fresh session.');
     await askForMode(ctx);
   });
 
-  bot.command('status', (ctx) => ctx.reply(statusText(ctx.chat.id)));
+  bot.command('cwd', (ctx) => {
+    const target = targetOf(ctx);
+    const arg = ctx.match.trim();
+    if (!arg) {
+      return ctx.reply(
+        `Working dir: ${sessionCwd.get(target.key) ?? config.workingDir}\nSet with /cwd <path>`,
+      );
+    }
+    const dir = expandPath(arg);
+    sessionCwd.set(target.key, dir);
+    return ctx.reply(`📁 Working dir for this session: ${dir}`);
+  });
+
+  bot.command('status', (ctx) => ctx.reply(statusText(targetOf(ctx))));
 
   bot.on('callback_query:data', async (ctx) => {
     const data = ctx.callbackQuery.data;
-    const chatId = ctx.chat?.id;
-    if (chatId === undefined) return;
+    if (ctx.chat === undefined) return;
+    const target = targetOf(ctx);
 
     // Permission mode chosen for a fresh session.
     if (data.startsWith('mode:')) {
       const mode = data.slice('mode:'.length) as PermissionMode;
-      sessionMode.set(chatId, mode);
+      sessionMode.set(target.key, mode);
       await ctx.answerCallbackQuery(`Mode: ${MODE_LABEL[mode] ?? mode}`);
-      await ctx.editMessageText(`Permission mode: <b>${MODE_LABEL[mode] ?? mode}</b>`, {
-        parse_mode: 'HTML',
-      }).catch(() => {});
-      const held = pendingPrompt.get(chatId);
+      await ctx
+        .editMessageText(`Permission mode: <b>${MODE_LABEL[mode] ?? mode}</b>`, { parse_mode: 'HTML' })
+        .catch(() => {});
+      const held = pendingPrompt.get(target.key);
       if (held !== undefined) {
-        pendingPrompt.delete(chatId);
-        await runTurn(ctx, chatId, held);
+        pendingPrompt.delete(target.key);
+        await enqueueTurn(ctx, target, held);
       }
+      return;
+    }
+
+    // tg_ask: user picked an option.
+    if (data.startsWith('ask:')) {
+      const [, id, idxStr] = data.split(':');
+      const result = id ? resolveAsk(id, Number(idxStr)) : null;
+      await ctx.answerCallbackQuery(result?.chosen ?? 'Expired');
+      if (result?.messageId !== undefined) {
+        await ctx.api
+          .editMessageText(
+            target.chatId,
+            result.messageId,
+            `❓ <b>${escapeHtml(result.question)}</b>\n✅ ${escapeHtml(result.chosen)}`,
+            { parse_mode: 'HTML' },
+          )
+          .catch(() => {});
+      }
+      return;
+    }
+
+    // Quick-reply button: feed its text back as a new user turn.
+    if (data.startsWith('qr:')) {
+      const replyText = takeQuickReply(data.slice('qr:'.length));
+      await ctx.answerCallbackQuery();
+      if (replyText !== undefined) {
+        logMessage(target.key, 'user', replyText);
+        await enqueueTurn(ctx, target, replyText);
+      }
+      return;
+    }
+
+    if (data === 'noop') {
+      await ctx.answerCallbackQuery();
       return;
     }
 
@@ -172,35 +276,30 @@ export function createBot(): Bot {
       return;
     }
 
-    // Completion action buttons.
-    switch (data) {
-      case 'new':
-        startFresh(chatId);
-        await ctx.answerCallbackQuery('Fresh session');
-        await askForMode(ctx);
-        return;
-      case 'status':
-        await ctx.answerCallbackQuery();
-        await ctx.reply(statusText(chatId));
-        return;
-      default:
-        await ctx.answerCallbackQuery('Expired');
-    }
-  });
-
-  bot.on('message:text', async (ctx) => {
-    const chatId = ctx.chat.id;
-    const text = ctx.message.text;
-    logMessage(chatId, 'user', text);
-
-    // First message of a fresh session: pick a permission mode, then run.
-    if (!sessionMode.has(chatId)) {
-      pendingPrompt.set(chatId, text);
+    // Completion action button.
+    if (data === 'new') {
+      startFresh(target.key);
+      await ctx.answerCallbackQuery('Fresh session');
       await askForMode(ctx);
       return;
     }
 
-    await runTurn(ctx, chatId, text);
+    await ctx.answerCallbackQuery('Expired');
+  });
+
+  bot.on('message:text', async (ctx) => {
+    const target = targetOf(ctx);
+    const text = ctx.message.text;
+    logMessage(target.key, 'user', text);
+
+    // First message of a fresh session: pick a permission mode, then run.
+    if (!sessionMode.has(target.key)) {
+      pendingPrompt.set(target.key, text);
+      await askForMode(ctx);
+      return;
+    }
+
+    await enqueueTurn(ctx, target, text);
   });
 
   bot.catch((err) => console.error('[bot] error', err));

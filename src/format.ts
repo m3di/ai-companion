@@ -13,6 +13,9 @@ export const SAFE_TOOLS = new Set([
   'BashOutput',
   'ListMcpResources',
   'ReadMcpResource',
+  // Our own in-process Telegram UI tools — always safe.
+  'mcp__telegram__send',
+  'mcp__telegram__ask',
 ]);
 
 export function escapeHtml(s: string): string {
@@ -71,6 +74,10 @@ export function describeTool(name: string, input: Record<string, unknown>): Tool
       return { summary: `Search · ${firstLine(input.query)}`, detail: String(input.query ?? '') };
     case 'TodoWrite':
       return { summary: 'Plan updated', detail: '', mute: true };
+    case 'mcp__telegram__send':
+    case 'mcp__telegram__ask':
+      // These already produce a visible Telegram message; don't log them too.
+      return { summary: name, detail: '', mute: true };
     default: {
       const detail = JSON.stringify(input);
       return { summary: name, detail: detail.length > 300 ? detail.slice(0, 300) + '…' : detail };

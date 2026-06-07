@@ -11,23 +11,23 @@ const APPROVAL_TIMEOUT_MS = 5 * 60 * 1000;
 /** Pending approvals keyed by a short id carried in callback_data. */
 const pending = new Map<string, (d: Decision) => void>();
 
-/** Per-chat set of tool names the user chose to always allow this session. */
-const autoAllow = new Map<number, Set<string>>();
+/** Per-session set of tool names the user chose to always allow. */
+const autoAllow = new Map<string, Set<string>>();
 
 let seq = 0;
 const nextId = () => (++seq).toString(36);
 
-function allowedFor(chatId: number): Set<string> {
-  let set = autoAllow.get(chatId);
+function allowedFor(key: string): Set<string> {
+  let set = autoAllow.get(key);
   if (!set) {
     set = new Set();
-    autoAllow.set(chatId, set);
+    autoAllow.set(key, set);
   }
   return set;
 }
 
-export function resetAutoAllow(chatId: number): void {
-  autoAllow.delete(chatId);
+export function resetAutoAllow(key: string): void {
+  autoAllow.delete(key);
 }
 
 /**
@@ -49,8 +49,8 @@ export function resolvePermission(data: string): boolean {
  * session-approved tools pass through silently; everything else prompts the
  * user with inline Allow / Always / Deny buttons and waits for the tap.
  */
-export function createCanUseTool(ctx: Context, chatId: number) {
-  const approved = allowedFor(chatId);
+export function createCanUseTool(ctx: Context, chatId: number, key: string) {
+  const approved = allowedFor(key);
 
   return async (
     toolName: string,
