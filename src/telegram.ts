@@ -41,6 +41,17 @@ const pendingPrompt = new Map<string, string>();
 // Button taps are handled outside this lock so approvals never deadlock.
 const busy = new Set<string>();
 const queues = new Map<string, Array<{ ctx: Context; text: string }>>();
+// AbortController for the turn currently running in each session, for /cancel.
+const running = new Map<string, AbortController>();
+
+/** Abort the running turn for a session and drop anything queued behind it. */
+function cancelSession(key: string): boolean {
+  queues.delete(key);
+  const controller = running.get(key);
+  if (!controller) return false;
+  controller.abort();
+  return true;
+}
 
 const MODE_LABEL: Record<string, string> = {
   auto: '⚡ Auto',
@@ -58,6 +69,10 @@ function modeKeyboard(): InlineKeyboard {
 
 function actionKeyboard(): InlineKeyboard {
   return new InlineKeyboard().text('🆕 New session · clears memory', 'new');
+}
+
+function stopKeyboard(): InlineKeyboard {
+  return new InlineKeyboard().text('🛑 Stop', 'stop');
 }
 
 function expandPath(p: string): string {
@@ -107,16 +122,26 @@ function startFresh(key: string): void {
 /** Run one user turn against Claude Code, rendering progress + answers. */
 async function runTurn(ctx: Context, target: Target, text: string): Promise<void> {
   const status = new LiveStatus(ctx, target.chatId);
-  await status.start();
+  await status.start(stopKeyboard());
   const canUseTool = createCanUseTool(ctx, target.chatId, target.key);
   const permissionMode = sessionMode.get(target.key) ?? config.permissionMode;
   const cwd = sessionCwd.get(target.key) ?? config.workingDir;
   const mcpServers = { telegram: buildUiServer(ctx, target.chatId, target.threadId) };
+  const abortController = new AbortController();
+  running.set(target.key, abortController);
 
   let ok = true;
   try {
     const resume = getSessionId(target.key);
-    for await (const ev of askClaude({ prompt: text, resume, canUseTool, permissionMode, cwd, mcpServers })) {
+    for await (const ev of askClaude({
+      prompt: text,
+      resume,
+      canUseTool,
+      permissionMode,
+      cwd,
+      mcpServers,
+      abortController,
+    })) {
       switch (ev.kind) {
         case 'session':
           setSessionId(target.key, ev.sessionId);
@@ -138,9 +163,14 @@ async function runTurn(ctx: Context, target: Target, text: string): Promise<void
     }
   } catch (err) {
     ok = false;
-    console.error('[claude] error', err);
-    await ctx.reply(`⚠️ Error: ${err instanceof Error ? err.message : String(err)}`);
+    if (abortController.signal.aborted) {
+      await ctx.reply('🛑 Cancelled.');
+    } else {
+      console.error('[claude] error', err);
+      await ctx.reply(`⚠️ Error: ${err instanceof Error ? err.message : String(err)}`);
+    }
   } finally {
+    running.delete(target.key);
     await status.finalize(ok, actionKeyboard());
   }
 }
@@ -188,10 +218,16 @@ export function createBot(): Bot {
     ctx.reply(
       'Connected. This chat (or each forum topic) is one Claude Code session.\n' +
         '/new — fresh session (clears context + re-asks permission mode)\n' +
+        '/cancel — stop the turn running in this session\n' +
         '/cwd [path] — show or set this session’s working directory\n' +
         '/status — session info',
     ),
   );
+
+  bot.command('cancel', (ctx) => {
+    const target = targetOf(ctx);
+    return ctx.reply(cancelSession(target.key) ? '🛑 Cancelling…' : 'Nothing is running.');
+  });
 
   bot.command('new', async (ctx) => {
     const target = targetOf(ctx);
@@ -267,6 +303,13 @@ export function createBot(): Bot {
 
     if (data === 'noop') {
       await ctx.answerCallbackQuery();
+      return;
+    }
+
+    // Stop button on the live status message.
+    if (data === 'stop') {
+      const cancelled = cancelSession(target.key);
+      await ctx.answerCallbackQuery(cancelled ? '🛑 Cancelling…' : 'Nothing running');
       return;
     }
 

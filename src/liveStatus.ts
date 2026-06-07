@@ -21,14 +21,19 @@ export class LiveStatus {
   private timer?: NodeJS.Timeout;
   private rendering = false;
   private dirty = false;
+  private keyboard?: InlineKeyboard;
 
   constructor(
     private readonly ctx: Context,
     private readonly chatId: number,
   ) {}
 
-  async start(): Promise<void> {
-    const msg = await this.ctx.reply(this.header, { parse_mode: 'HTML' });
+  async start(keyboard?: InlineKeyboard): Promise<void> {
+    this.keyboard = keyboard;
+    const msg = await this.ctx.reply(this.header, {
+      parse_mode: 'HTML',
+      reply_markup: keyboard,
+    });
     this.messageId = msg.message_id;
   }
 
@@ -79,6 +84,7 @@ export class LiveStatus {
     try {
       await this.ctx.api.editMessageText(this.chatId, this.messageId, this.body(), {
         parse_mode: 'HTML',
+        reply_markup: this.keyboard,
       });
     } catch {
       // "message is not modified", rate limits, etc. — safe to ignore.

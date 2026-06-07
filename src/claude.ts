@@ -37,6 +37,7 @@ export async function* askClaude(opts: {
   permissionMode?: PermissionMode;
   mcpServers?: Record<string, unknown>;
   cwd?: string;
+  abortController?: AbortController;
 }): AsyncGenerator<ClaudeEvent> {
   const append = readSystemPrompt();
 
@@ -45,6 +46,7 @@ export async function* askClaude(opts: {
     options: {
       resume: opts.resume,
       cwd: opts.cwd ?? config.workingDir,
+      ...(opts.abortController ? { abortController: opts.abortController } : {}),
       permissionMode: opts.permissionMode ?? config.permissionMode,
       ...(opts.mcpServers ? { mcpServers: opts.mcpServers as never } : {}),
       ...(opts.canUseTool ? { canUseTool: opts.canUseTool } : {}),
