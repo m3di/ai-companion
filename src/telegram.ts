@@ -1,5 +1,6 @@
 import { homedir } from 'node:os';
 import { resolve } from 'node:path';
+import { autoRetry } from '@grammyjs/auto-retry';
 import { Bot, type Context, InlineKeyboard } from 'grammy';
 import { config, type PermissionMode } from './config.js';
 import { askClaude } from './claude.js';
@@ -14,7 +15,7 @@ import {
   setMode,
   setSessionId,
 } from './db.js';
-import { chunkRaw, describeTool, escapeHtml, toTelegramMarkdown } from './format.js';
+import { chunkRaw, describeTool, escapeHtml, fileOpMessage, toTelegramMarkdown } from './format.js';
 import { LiveStatus } from './liveStatus.js';
 import { createCanUseTool, resetAutoAllow, resolvePermission } from './permissions.js';
 import { buildUiServer, resolveAsk, takeQuickReply } from './ui.js';
@@ -191,6 +192,8 @@ async function runTurn(
         case 'tool': {
           const view = describeTool(ev.name, ev.input);
           if (!view.mute) status.push(view.summary, view.subagent ? '🤖' : '⚙️');
+          const opMsg = fileOpMessage(ev.name, ev.input);
+          if (opMsg) await ctx.reply(opMsg, { parse_mode: 'HTML' });
           break;
         }
         case 'text':
@@ -250,6 +253,9 @@ async function enqueueTurn(
 
 export function createBot(): Bot {
   const bot = new Bot(config.telegramToken);
+
+  // Respect Telegram rate limits: retry on 429 instead of dropping messages.
+  bot.api.config.use(autoRetry());
 
   // Access control: only allow-listed chats may drive Claude Code.
   bot.use(async (ctx, next) => {
