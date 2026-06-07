@@ -40,7 +40,7 @@ const pendingPrompt = new Map<string, string>();
 // Per-session turn serialization: one running turn per session, the rest queue.
 // Button taps are handled outside this lock so approvals never deadlock.
 const busy = new Set<string>();
-const queues = new Map<string, Array<{ ctx: Context; text: string }>>();
+const queues = new Map<string, Array<{ ctx: Context; text: string; userMsgId?: number }>>();
 // AbortController for the turn currently running in each session, for /cancel.
 const running = new Map<string, AbortController>();
 
@@ -77,6 +77,27 @@ function stopKeyboard(): InlineKeyboard {
 
 function expandPath(p: string): string {
   return resolve(p.startsWith('~') ? p.replace(/^~/, homedir()) : p);
+}
+
+/**
+ * Set a reaction on the user's message as an atomic state indicator:
+ * ✍️ working · 👀 queued · 👍 done · 🤔 cancelled · 😱 errored.
+ * Best-effort — reactions need permission and are never load-bearing.
+ */
+type ReactEmoji = '✍' | '👀' | '👍' | '🤔' | '😱';
+
+async function react(
+  ctx: Context,
+  chatId: number,
+  msgId: number | undefined,
+  emoji: ReactEmoji,
+): Promise<void> {
+  if (msgId === undefined) return;
+  try {
+    await ctx.api.setMessageReaction(chatId, msgId, [{ type: 'emoji', emoji }]);
+  } catch {
+    /* ignore */
+  }
 }
 
 async function askForMode(ctx: Context): Promise<void> {
@@ -120,7 +141,18 @@ function startFresh(key: string): void {
 }
 
 /** Run one user turn against Claude Code, rendering progress + answers. */
-async function runTurn(ctx: Context, target: Target, text: string): Promise<void> {
+async function runTurn(
+  ctx: Context,
+  target: Target,
+  text: string,
+  userMsgId?: number,
+): Promise<void> {
+  await react(ctx, target.chatId, userMsgId, '✍');
+  await ctx.replyWithChatAction('typing').catch(() => {});
+  const typing = setInterval(() => {
+    void ctx.replyWithChatAction('typing').catch(() => {});
+  }, 5000);
+
   const status = new LiveStatus(ctx, target.chatId);
   await status.start(stopKeyboard());
   const canUseTool = createCanUseTool(ctx, target.chatId, target.key);
@@ -170,27 +202,35 @@ async function runTurn(ctx: Context, target: Target, text: string): Promise<void
       await ctx.reply(`⚠️ Error: ${err instanceof Error ? err.message : String(err)}`);
     }
   } finally {
+    clearInterval(typing);
     running.delete(target.key);
     await status.finalize(ok, actionKeyboard());
+    await react(ctx, target.chatId, userMsgId, abortController.signal.aborted ? '🤔' : ok ? '👍' : '😱');
   }
 }
 
 /** Serialize turns per session: run now if idle, else queue. */
-async function enqueueTurn(ctx: Context, target: Target, text: string): Promise<void> {
+async function enqueueTurn(
+  ctx: Context,
+  target: Target,
+  text: string,
+  userMsgId?: number,
+): Promise<void> {
   if (busy.has(target.key)) {
     const q = queues.get(target.key) ?? [];
-    q.push({ ctx, text });
+    q.push({ ctx, text, userMsgId });
     queues.set(target.key, q);
+    await react(ctx, target.chatId, userMsgId, '👀');
     await ctx.reply('⏳ Queued — running after the current task.');
     return;
   }
   busy.add(target.key);
   try {
-    await runTurn(ctx, target, text);
+    await runTurn(ctx, target, text, userMsgId);
     for (;;) {
       const next = queues.get(target.key)?.shift();
       if (!next) break;
-      await runTurn(next.ctx, target, next.text);
+      await runTurn(next.ctx, target, next.text, next.userMsgId);
     }
   } finally {
     busy.delete(target.key);
@@ -342,7 +382,7 @@ export function createBot(): Bot {
       return;
     }
 
-    await enqueueTurn(ctx, target, text);
+    await enqueueTurn(ctx, target, text, ctx.message.message_id);
   });
 
   bot.catch((err) => console.error('[bot] error', err));
