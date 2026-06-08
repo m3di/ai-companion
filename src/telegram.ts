@@ -32,6 +32,7 @@ import {
   conciergeSystemPrompt,
   CONCIERGE_TOOLS,
   resolveConfirm,
+  takePendingSeed,
   takePendingSwitch,
 } from './concierge.js';
 import {
@@ -247,10 +248,17 @@ async function runTurn(ctx: Context, target: Target, text: string, userMsgId?: n
     await view.finish(ok);
     await react(ctx, target.chatId, userMsgId, abortController.signal.aborted ? '🤔' : ok ? '👍' : '😱');
     // The concierge defers thread switches until after its reply, so changing
-    // the active thread mid-turn doesn't suppress its own output. Apply it now.
+    // the active thread mid-turn doesn't suppress its own output. Apply it now,
+    // then hand the worker its seeded task (delegation) as a fresh turn.
     if (isControl) {
       const sw = takePendingSwitch(target.chatId);
-      if (sw !== undefined) await attachSession(ctx.api, target.chatId, sw);
+      if (sw !== undefined) {
+        await attachSession(ctx.api, target.chatId, sw);
+        const seed = takePendingSeed(target.chatId);
+        if (seed && seed.slot === sw) {
+          await submitTo(ctx, targetForSlot(target.chatId, sw), seed.text);
+        }
+      }
     }
   }
 }

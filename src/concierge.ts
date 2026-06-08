@@ -9,7 +9,10 @@ import {
   getSession,
   getSharedMemory,
   listSessions,
+  recentMessages,
+  sessionKey,
   setAutoRoute,
+  setMemo,
   setPinned,
   setSessionStatus,
   setSessionTitle,
@@ -32,9 +35,10 @@ import type { RunningView } from './sessions.js';
 /** Tool names the concierge is allowed to use (an allowlist for its session). */
 export const CONCIERGE_TOOLS = [
   'mcp__bot__listThreads',
+  'mcp__bot__readThread',
   'mcp__bot__newThread',
   'mcp__bot__switchThread',
-  'mcp__bot__renameThread',
+  'mcp__bot__setThreadMemo',
   'mcp__bot__closeThread',
   'mcp__bot__getSharedMemory',
   'mcp__bot__setSharedMemory',
@@ -51,6 +55,15 @@ export function takePendingSwitch(chatId: number): number | undefined {
   const slot = pendingSwitch.get(chatId);
   pendingSwitch.delete(chatId);
   return slot;
+}
+
+// A task to seed into a thread as its first turn after the switch — the
+// concierge delegating work to a worker thread, so the user never re-pastes.
+const pendingSeed = new Map<number, { slot: number; text: string }>();
+export function takePendingSeed(chatId: number): { slot: number; text: string } | undefined {
+  const seed = pendingSeed.get(chatId);
+  pendingSeed.delete(chatId);
+  return seed;
 }
 
 // Destructive-action confirmations, resolved by an inline button tap.
@@ -82,7 +95,13 @@ export function conciergeSystemPrompt(chatId: number): string {
 
   return `You are the concierge for a Telegram bot that runs several parallel Claude Code threads for one user. You help them manage their threads and the bot's shared memory, and answer questions about the bot's state. You are NOT a coding agent — you only use the bot tools below.
 
-Be concise and action-oriented. When asked to do something, use a tool rather than just describing it. Switching to or creating a thread takes effect right after your reply (tell the user). Closing a thread is confirmed with the user automatically by the tool. When offering the user choices or next steps, use the telegram ask / askUserQuestion / send tools to render tappable buttons.
+Be concise and action-oriented. When asked to do something, use a tool rather than just describing it — and don't ask permission for non-destructive actions like setting a memo or renaming; just do them (only closing a thread confirms, automatically). Switching to or creating a thread takes effect right after your reply.
+
+When the user describes hands-on work (writing/editing code, running a task), that belongs in a worker thread, not here. DELEGATE it: pick the right existing thread or create one with newThread, and pass the full task (with all the context the user gave you — links, decisions, constraints) plus a memo. The worker starts on the task automatically — never tell the user to paste a summary themselves.
+
+CRITICAL: if your reply will switch the user to another thread, do NOT end it with a question that needs a follow-up message — they won't be in this thread to answer it. Decide and act, or ask first with the ask tool (which blocks for the answer) BEFORE switching. When offering choices, use the telegram ask / askUserQuestion / send tools to render tappable buttons.
+
+You can see what each thread is about: a thread with a memo below already has a summary; for one without, call readThread(slot) to read its logged messages before you describe or rename it — do NOT guess from the name. When you work out what a thread is, call setThreadMemo(slot, title, summary) so the name and memo reflect reality (this also makes auto-routing accurate). If the user asks what their threads are about, read the ones that lack a memo and answer from their actual content.
 
 Shared memory holds facts true across every thread (the user's preferences, defaults, ongoing context). When the user tells you something worth remembering, fold it into the shared memory via setSharedMemory (read it first, merge, write the whole thing back — keep it tidy and deduplicated).
 
@@ -117,39 +136,71 @@ export function buildConciergeServer(view: RunningView) {
 
   const newThread = tool(
     'newThread',
-    'Create a new work thread. It becomes active right after your reply.',
-    { title: z.string().describe('Short thread title') },
+    'Create a new work thread and switch to it after your reply. To delegate work, pass a memo (what it is about) and a task (the full instruction for the worker, with all context) — the worker starts on the task automatically, so the user never re-pastes anything.',
+    {
+      title: z.string().describe('Short thread title'),
+      memo: z.string().optional().describe('1-2 line summary of what this thread is about'),
+      task: z.string().optional().describe('Full first instruction to hand the worker, with all context'),
+    },
     async (args) => {
       const slot = createSession(chatId, args.title.slice(0, 60));
+      if (args.memo) setMemo(chatId, slot, args.title.slice(0, 60), args.memo);
+      if (args.task) pendingSeed.set(chatId, { slot, text: args.task });
       pendingSwitch.set(chatId, slot);
-      return { content: [{ type: 'text' as const, text: `Created "${args.title}" (slot ${slot}). Switching after this reply.` }] };
+      const tail = args.task ? ', switching there and starting the task' : ', switching after this reply';
+      return { content: [{ type: 'text' as const, text: `Created "${args.title}" (slot ${slot})${tail}.` }] };
     },
   );
 
   const switchThread = tool(
     'switchThread',
-    'Switch the user to an existing thread. Takes effect right after your reply.',
-    { slot: z.number().describe('Thread slot number') },
+    'Switch the user to an existing thread after your reply. Optionally pass a task to hand that thread as a new instruction (with full context) so it starts working without the user re-pasting.',
+    {
+      slot: z.number().describe('Thread slot number'),
+      task: z.string().optional().describe('Full instruction to hand the worker, with all context'),
+    },
     async (args) => {
       const s = getSession(chatId, args.slot);
       if (!s || s.status !== 'active') {
         return { content: [{ type: 'text' as const, text: `No active thread at slot ${args.slot}.` }], isError: true };
       }
+      if (args.task) pendingSeed.set(chatId, { slot: args.slot, text: args.task });
       pendingSwitch.set(chatId, args.slot);
-      return { content: [{ type: 'text' as const, text: `Will switch to "${s.title}" after this reply.` }] };
+      const tail = args.task ? ' and handing it the task' : '';
+      return { content: [{ type: 'text' as const, text: `Will switch to "${s.title}"${tail} after this reply.` }] };
     },
   );
 
-  const renameThread = tool(
-    'renameThread',
-    "Rename a thread (changes its keyboard button label).",
-    { slot: z.number(), title: z.string() },
+  const readThread = tool(
+    'readThread',
+    "Read the recent messages logged in a thread, so you can tell what it's actually about. Use this before describing or renaming a thread instead of guessing from its name.",
+    { slot: z.number(), limit: z.number().optional().describe('How many recent messages (default 12)') },
     async (args) => {
       if (!getSession(chatId, args.slot)) {
         return { content: [{ type: 'text' as const, text: `No thread at slot ${args.slot}.` }], isError: true };
       }
-      setSessionTitle(chatId, args.slot, args.title.slice(0, 60));
-      return { content: [{ type: 'text' as const, text: `Renamed slot ${args.slot} to "${args.title}".` }] };
+      const msgs = recentMessages(sessionKey(chatId, args.slot), Math.min(args.limit ?? 12, 30));
+      if (msgs.length === 0) {
+        return { content: [{ type: 'text' as const, text: '(no messages logged in this thread yet)' }] };
+      }
+      const text = msgs
+        .map((m) => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content.slice(0, 500)}`)
+        .join('\n');
+      return { content: [{ type: 'text' as const, text }] };
+    },
+  );
+
+  const setThreadMemo = tool(
+    'setThreadMemo',
+    "Set a thread's title (its keyboard label) and optionally a memo (1-2 line summary of what it's about). Use after readThread so names/memos reflect reality; this also makes future auto-routing accurate.",
+    { slot: z.number(), title: z.string(), summary: z.string().optional() },
+    async (args) => {
+      if (!getSession(chatId, args.slot)) {
+        return { content: [{ type: 'text' as const, text: `No thread at slot ${args.slot}.` }], isError: true };
+      }
+      if (args.summary) setMemo(chatId, args.slot, args.title.slice(0, 60), args.summary);
+      else setSessionTitle(chatId, args.slot, args.title.slice(0, 60));
+      return { content: [{ type: 'text' as const, text: `Updated slot ${args.slot} → "${args.title}".` }] };
     },
   );
 
@@ -216,6 +267,6 @@ export function buildConciergeServer(view: RunningView) {
     name: 'bot',
     version: '1.0.0',
     instructions: 'Tools to manage the bot: threads, routing, and shared memory.',
-    tools: [listThreads, newThread, switchThread, renameThread, closeThread, getShared, setShared, setRouting],
+    tools: [listThreads, readThread, newThread, switchThread, setThreadMemo, closeThread, getShared, setShared, setRouting],
   });
 }
