@@ -25,6 +25,8 @@ export const config = {
   workingDir: resolve(process.env.CLAUDE_WORKING_DIR || process.cwd()),
   permissionMode: (process.env.PERMISSION_MODE || 'default') as PermissionMode,
   model: process.env.CLAUDE_MODEL || undefined,
+  // Fast, cheap model for the message router (Phase 1). Haiku by default.
+  routerModel: process.env.ROUTER_MODEL || 'claude-haiku-4-5-20251001',
   systemPromptPath: resolve(process.env.SYSTEM_PROMPT_PATH || 'prompts/system.md'),
   dbPath: resolve(process.env.DB_PATH || 'data/companion.db'),
 } as const;

@@ -81,6 +81,16 @@ const hasMemo = db
   .get();
 if (!hasMemo) db.exec('ALTER TABLE chat_sessions ADD COLUMN memo TEXT');
 
+// Routing settings (Phase 1): auto_route toggles the classifier; pinned locks
+// routing to the active thread regardless.
+const hasAutoRoute = db
+  .prepare("SELECT 1 FROM pragma_table_info('chat_state') WHERE name = 'auto_route'")
+  .get();
+if (!hasAutoRoute) {
+  db.exec('ALTER TABLE chat_state ADD COLUMN auto_route INTEGER NOT NULL DEFAULT 1');
+  db.exec('ALTER TABLE chat_state ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0');
+}
+
 const stmts = {
   getSession: db.prepare<[string]>('SELECT session_id FROM sessions WHERE session_key = ?'),
   setSession: db.prepare<[string, string]>(`
@@ -146,6 +156,13 @@ const stmts = {
     INSERT INTO chat_state (chat_id, active_slot) VALUES (?, ?)
     ON CONFLICT(chat_id) DO UPDATE SET active_slot = excluded.active_slot
   `),
+  getChatSettings: db.prepare<[number]>(
+    'SELECT auto_route, pinned FROM chat_state WHERE chat_id = ?',
+  ),
+  setAutoRoute: db.prepare<[number, number]>(
+    'UPDATE chat_state SET auto_route = ? WHERE chat_id = ?',
+  ),
+  setPinned: db.prepare<[number, number]>('UPDATE chat_state SET pinned = ? WHERE chat_id = ?'),
 };
 
 export function getSessionId(key: string): string | undefined {
@@ -272,4 +289,24 @@ export function getActiveSlot(chatId: number): number | undefined {
 
 export function setActiveSlot(chatId: number, slot: number): void {
   stmts.setActiveSlot.run(chatId, slot);
+}
+
+export interface ChatSettings {
+  autoRoute: boolean;
+  pinned: boolean;
+}
+
+export function getChatSettings(chatId: number): ChatSettings {
+  const row = stmts.getChatSettings.get(chatId) as
+    | { auto_route: number; pinned: number }
+    | undefined;
+  return { autoRoute: (row?.auto_route ?? 1) === 1, pinned: (row?.pinned ?? 0) === 1 };
+}
+
+export function setAutoRoute(chatId: number, on: boolean): void {
+  stmts.setAutoRoute.run(on ? 1 : 0, chatId);
+}
+
+export function setPinned(chatId: number, on: boolean): void {
+  stmts.setPinned.run(on ? 1 : 0, chatId);
 }

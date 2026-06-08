@@ -7,6 +7,7 @@ import { askClaude } from './claude.js';
 import {
   type ChatSession,
   createSession,
+  getChatSettings,
   getMemo,
   getPrefs,
   getSessionId,
@@ -14,14 +15,17 @@ import {
   logMessage,
   messageCount,
   sessionKey,
+  setAutoRoute,
   setCwd,
   setMode,
+  setPinned,
   setSessionStatus,
   setSessionId,
   setSessionTitle,
 } from './db.js';
 import { describeTool, escapeHtml, fileOpMessage } from './format.js';
 import { createCanUseTool, resolvePermission } from './permissions.js';
+import { routeMessage } from './router.js';
 import {
   activeSlot,
   attachSession,
@@ -119,9 +123,12 @@ function statusText(target: Target): string {
   const prefs = getPrefs(target.key);
   const mode = prefs.permissionMode;
   const memo = getMemo(target.chatId, target.slot)?.summary;
+  const s = getChatSettings(target.chatId);
+  const routing = s.pinned ? 'pinned here' : s.autoRoute ? 'auto' : 'off';
   return (
     `Session: ${titleOf(target.chatId, target.slot)} (slot ${target.slot})\n` +
     (memo ? `Memo: ${memo}\n` : '') +
+    `Routing: ${routing}\n` +
     `Claude session: ${sessionId ?? 'none (starts on next message)'}\n` +
     `Permission mode: ${mode ? MODE_LABEL[mode] ?? mode : 'not chosen yet'}\n` +
     `Working dir: ${prefs.cwd ?? config.workingDir}\n` +
@@ -276,21 +283,113 @@ function bufferMessage(ctx: Context, target: Target, text: string, msgId: number
   buf.timer = setTimeout(() => void flushInbox(target.key), wait);
 }
 
-/** Combine a burst into one prompt and run it (or ask for a mode first). */
+/** Combine a burst into one prompt, route it to a thread, and run it. */
 async function flushInbox(key: string): Promise<void> {
   const buf = inbox.get(key);
   if (!buf) return;
   inbox.delete(key);
   if (buf.timer) clearTimeout(buf.timer);
   const text = buf.texts.join('\n');
-  logMessage(buf.target.key, 'user', text);
 
-  if (getMode(buf.target.key) === undefined) {
-    pendingPrompt.set(buf.target.key, text);
-    await askForMode(buf.ctx);
+  const target = await decideRoute(buf.ctx, buf.ctx.chat!.id, text, buf.firstMsgId);
+  if (!target) return; // a thread picker was shown; resumes via the route: callback
+  await submitTo(buf.ctx, target, text, buf.firstMsgId);
+}
+
+/** Log the prompt to its thread and run it (asking for a mode first if new). */
+async function submitTo(ctx: Context, target: Target, text: string, firstMsgId?: number): Promise<void> {
+  logMessage(target.key, 'user', text);
+  if (getMode(target.key) === undefined) {
+    pendingPrompt.set(target.key, text);
+    await askForMode(ctx);
     return;
   }
-  await enqueueTurn(buf.ctx, buf.target, text, buf.firstMsgId);
+  await enqueueTurn(ctx, target, text, firstMsgId);
+}
+
+// Short messages and acknowledgements are almost always a follow-up to whatever
+// the user is looking at — route them to the active thread without paying for a
+// classifier call.
+const ACK = /^(y(es|ep|eah|up)?|no(pe)?|ok(ay)?|k|sure|thanks|thank you|ty|go(\s|$)|go on|go ahead|continue|do it|please|stop|wait|cancel|nvm|got it|cool|nice|perfect|great)\b/i;
+function isFollowup(text: string): boolean {
+  const t = text.trim();
+  return t.length <= 24 || ACK.test(t);
+}
+
+// Phase 1 routing: a message held while we wait for the user to pick a thread.
+let routeSeq = 0;
+const nextRouteId = () => (++routeSeq).toString(36);
+const pendingRoute = new Map<string, { text: string; firstMsgId?: number }>();
+
+/**
+ * Decide which thread a message belongs to. Returns the target to run against,
+ * or null when a thread picker was posted and we're waiting on the user's tap.
+ */
+async function decideRoute(
+  ctx: Context,
+  chatId: number,
+  text: string,
+  firstMsgId?: number,
+): Promise<Target | null> {
+  ensureChat(chatId);
+  const active = activeTarget(chatId);
+  const settings = getChatSettings(chatId);
+  const threads = listSessions(chatId, 'active');
+
+  // Nothing to decide: routing off, pinned, a single thread, or an obvious
+  // follow-up (short message / acknowledgement) that stays in the active thread.
+  if (!settings.autoRoute || settings.pinned || threads.length <= 1) return active;
+  if (isFollowup(text)) return active;
+
+  await ctx.replyWithChatAction('typing').catch(() => {});
+  const route = await routeMessage(
+    text,
+    threads.map((t) => ({ slot: t.slot, title: t.title, summary: getMemo(chatId, t.slot)?.summary })),
+    active.slot,
+  );
+
+  // Classifier failed or unsure → let the user decide (a misroute is costly).
+  if (!route) return askRoute(ctx, chatId, text, threads, firstMsgId, 'Which thread is this for?');
+  if (route.confidence === 'low') {
+    return askRoute(ctx, chatId, text, threads, firstMsgId, 'Not sure which thread — pick one:');
+  }
+
+  if (route.target === 'new') {
+    const slot = createSession(chatId, 'New thread');
+    setSessionTitle(chatId, slot, `${basename(config.workingDir)} #${slot + 1}`);
+    await attachSession(ctx.api, chatId, slot);
+    return targetForSlot(chatId, slot);
+  }
+
+  if (route.target !== active.slot) {
+    await attachSession(ctx.api, chatId, route.target);
+    const reason = route.reason ? ` · <i>${escapeHtml(route.reason)}</i>` : '';
+    await ctx.reply(`🧭 → <b>${escapeHtml(titleOf(chatId, route.target))}</b>${reason}`, {
+      parse_mode: 'HTML',
+    });
+  }
+  return targetForSlot(chatId, route.target);
+}
+
+/** Post a thread picker, hold the message, and return null (resumes on tap). */
+function askRoute(
+  ctx: Context,
+  chatId: number,
+  text: string,
+  threads: ChatSession[],
+  firstMsgId: number | undefined,
+  prompt: string,
+): null {
+  const id = nextRouteId();
+  const kb = new InlineKeyboard();
+  threads.forEach((t, i) => {
+    kb.text(t.title.slice(0, 40), `route:${id}:${t.slot}`);
+    if (i % 2 === 1) kb.row();
+  });
+  kb.row().text('➕ New thread', `route:${id}:new`);
+  pendingRoute.set(id, { text, firstMsgId });
+  void ctx.reply(`🧭 <b>${escapeHtml(prompt)}</b>`, { parse_mode: 'HTML', reply_markup: kb });
+  return null;
 }
 
 export function createBot(): Bot {
@@ -313,14 +412,16 @@ export function createBot(): Bot {
   bot.command('start', async (ctx) => {
     ensureChat(ctx.chat!.id);
     await ctx.reply(
-      'Connected. This chat can hold several Claude sessions at once — the buttons below switch between them; they all keep running.\n' +
-        '/new — start another session\n' +
-        '/sessions — show the session keyboard\n' +
-        '/close — close the current session\n' +
-        '/history — reopen a closed session\n' +
-        '/cancel — stop the current session’s turn\n' +
-        '/cwd [path] — show or set this session’s working directory\n' +
-        '/status — current session info',
+      'Connected. This chat runs several Claude threads at once. Just talk — I route each message to the matching thread (and tell you when I switch). The buttons below switch manually; every thread keeps running.\n' +
+        '/new — start another thread\n' +
+        '/sessions — show the thread keyboard\n' +
+        '/pin — keep messages in the current thread (toggle)\n' +
+        '/auto — turn auto-routing on/off\n' +
+        '/close — close the current thread\n' +
+        '/history — reopen a closed thread\n' +
+        '/cancel — stop the current thread’s turn\n' +
+        '/cwd [path] — show or set this thread’s working directory\n' +
+        '/status — current thread info',
       { reply_markup: buildKeyboard(ctx.chat!.id) },
     );
   });
@@ -356,6 +457,31 @@ export function createBot(): Bot {
     return ctx.reply('🗂 Closed sessions — tap to reopen:', {
       reply_markup: sessionListKeyboard(chatId, closed, 'reopen'),
     });
+  });
+
+  bot.command('pin', (ctx) => {
+    const chatId = ctx.chat!.id;
+    ensureChat(chatId);
+    const next = !getChatSettings(chatId).pinned;
+    setPinned(chatId, next);
+    return ctx.reply(
+      next
+        ? `📌 Pinned to <b>${escapeHtml(titleOf(chatId, activeSlot(chatId)))}</b> — messages stay here until you /pin again.`
+        : '📌 Unpinned — messages route to the matching thread again.',
+      { parse_mode: 'HTML' },
+    );
+  });
+
+  bot.command('auto', (ctx) => {
+    const chatId = ctx.chat!.id;
+    ensureChat(chatId);
+    const next = !getChatSettings(chatId).autoRoute;
+    setAutoRoute(chatId, next);
+    return ctx.reply(
+      next
+        ? '🧭 Auto-routing on — I pick the matching thread for each message.'
+        : '🧭 Auto-routing off — messages go to the active thread.',
+    );
   });
 
   bot.command('cancel', (ctx) => {
@@ -406,6 +532,36 @@ export function createBot(): Bot {
       setSessionStatus(chatId, slot, 'active');
       await ctx.answerCallbackQuery('Reopened');
       await attachSession(ctx.api, chatId, slot);
+      return;
+    }
+
+    // Thread picker (routing) — user chose where a held message should go.
+    if (data.startsWith('route:')) {
+      const [, id, sel] = data.split(':');
+      const pend = id ? pendingRoute.get(id) : undefined;
+      await ctx.answerCallbackQuery();
+      if (!pend) {
+        await ctx.editMessageText('🧭 (expired)').catch(() => {});
+        return;
+      }
+      pendingRoute.delete(id!);
+      let routed: Target;
+      if (sel === 'new') {
+        const slot = createSession(chatId, 'New thread');
+        setSessionTitle(chatId, slot, `${basename(config.workingDir)} #${slot + 1}`);
+        await attachSession(ctx.api, chatId, slot);
+        routed = targetForSlot(chatId, slot);
+      } else {
+        const slot = Number(sel);
+        await attachSession(ctx.api, chatId, slot);
+        routed = targetForSlot(chatId, slot);
+      }
+      await ctx
+        .editMessageText(`🧭 → <b>${escapeHtml(titleOf(chatId, routed.slot))}</b>`, {
+          parse_mode: 'HTML',
+        })
+        .catch(() => {});
+      await submitTo(ctx, routed, pend.text, pend.firstMsgId);
       return;
     }
 
