@@ -79,6 +79,20 @@ db.exec(`
     content    TEXT NOT NULL DEFAULT '',
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
+
+  -- Routing history: every router decision, and corrections (wrong_slot set when
+  -- the user overrode the route). Fed back into the router as recent-sequence
+  -- context + few-shot examples so it learns in-context.
+  CREATE TABLE IF NOT EXISTS route_log (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id     INTEGER NOT NULL,
+    message     TEXT NOT NULL,
+    slot        INTEGER NOT NULL,
+    title       TEXT NOT NULL,
+    wrong_slot  INTEGER,
+    wrong_title TEXT,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+  );
 `);
 
 // Each thread keeps a durable "memo": a short summary of what it's about and
@@ -176,6 +190,15 @@ const stmts = {
     INSERT INTO shared_memory (chat_id, content, updated_at) VALUES (?, ?, datetime('now'))
     ON CONFLICT(chat_id) DO UPDATE SET content = excluded.content, updated_at = datetime('now')
   `),
+  insertRoute: db.prepare<[number, string, number, string, number | null, string | null]>(
+    'INSERT INTO route_log (chat_id, message, slot, title, wrong_slot, wrong_title) VALUES (?, ?, ?, ?, ?, ?)',
+  ),
+  recentRoutes: db.prepare<[number, number]>(
+    'SELECT message, title FROM route_log WHERE chat_id = ? ORDER BY id DESC LIMIT ?',
+  ),
+  recentCorrections: db.prepare<[number, number]>(
+    'SELECT message, title, wrong_title FROM route_log WHERE chat_id = ? AND wrong_slot IS NOT NULL ORDER BY id DESC LIMIT ?',
+  ),
 };
 
 export function getSessionId(key: string): string | undefined {
@@ -332,4 +355,34 @@ export function getSharedMemory(chatId: number): string {
 
 export function setSharedMemory(chatId: number, content: string): void {
   stmts.setShared.run(chatId, content);
+}
+
+/** Record a routing decision (wrong set when the user overrode an auto-route). */
+export function logRoute(
+  chatId: number,
+  message: string,
+  slot: number,
+  title: string,
+  wrong?: { slot: number; title: string },
+): void {
+  stmts.insertRoute.run(chatId, message.slice(0, 160), slot, title, wrong?.slot ?? null, wrong?.title ?? null);
+}
+
+/** The last `n` routing decisions, oldest-first — the recent sequence context. */
+export function recentRoutes(chatId: number, n: number): Array<{ message: string; title: string }> {
+  const rows = stmts.recentRoutes.all(chatId, n) as Array<{ message: string; title: string }>;
+  return rows.reverse();
+}
+
+/** The last `n` corrections, oldest-first — few-shot examples for the router. */
+export function recentCorrections(
+  chatId: number,
+  n: number,
+): Array<{ message: string; title: string; wrong_title: string }> {
+  const rows = stmts.recentCorrections.all(chatId, n) as Array<{
+    message: string;
+    title: string;
+    wrong_title: string;
+  }>;
+  return rows.reverse();
 }

@@ -14,7 +14,10 @@ import {
   getSharedMemory,
   listSessions,
   logMessage,
+  logRoute,
   messageCount,
+  recentCorrections,
+  recentRoutes,
   sessionKey,
   setAutoRoute,
   setCwd,
@@ -160,6 +163,8 @@ async function createAndAttach(ctx: Context): Promise<void> {
 /** Switch the chat's attached session to `slot` (replays last messages). */
 async function switchTo(ctx: Context, slot: number): Promise<void> {
   const chatId = ctx.chat!.id;
+  // A manual switch right after an auto-route teaches the router it was wrong.
+  noteManualSwitch(chatId, slot);
   await attachSession(ctx.api, chatId, slot);
 }
 
@@ -355,7 +360,29 @@ function isFollowup(text: string): boolean {
 // Phase 1 routing: a message held while we wait for the user to pick a thread.
 let routeSeq = 0;
 const nextRouteId = () => (++routeSeq).toString(36);
-const pendingRoute = new Map<string, { text: string; firstMsgId?: number }>();
+// guessSlot: the router's low-confidence guess, so a different picker pick is a
+// recorded correction.
+const pendingRoute = new Map<string, { text: string; firstMsgId?: number; guessSlot?: number }>();
+
+// The last high-confidence auto-route that SWITCHED threads, pending the user's
+// next action. If they manually switch elsewhere before sending another
+// message, that's a correction; if they send a follow-up, the route was good.
+const lastAutoRoute = new Map<number, { message: string; slot: number; ts: number }>();
+// Short window: a switch this soon after an auto-route is likely a correction;
+// later switches are probably just normal navigation, so we don't mislabel them.
+const CORRECTION_WINDOW_MS = 45 * 1000;
+
+/** Record an implicit correction if a manual switch follows a bad auto-route. */
+function noteManualSwitch(chatId: number, toSlot: number): void {
+  const last = lastAutoRoute.get(chatId);
+  lastAutoRoute.delete(chatId);
+  if (!last || toSlot === last.slot || toSlot === CONTROL_SLOT) return;
+  if (Date.now() - last.ts > CORRECTION_WINDOW_MS) return;
+  logRoute(chatId, last.message, toSlot, titleOf(chatId, toSlot), {
+    slot: last.slot,
+    title: titleOf(chatId, last.slot),
+  });
+}
 
 /**
  * Decide which thread a message belongs to. Returns the target to run against,
@@ -368,6 +395,8 @@ async function decideRoute(
   firstMsgId?: number,
 ): Promise<Target | null> {
   ensureChat(chatId);
+  // A new message arrived without a manual switch → the prior auto-route stuck.
+  lastAutoRoute.delete(chatId);
   const active = activeTarget(chatId);
   const settings = getChatSettings(chatId);
   const threads = listSessions(chatId, 'active');
@@ -384,6 +413,7 @@ async function decideRoute(
     text,
     threads.map((t) => ({ slot: t.slot, title: t.title, summary: getMemo(chatId, t.slot)?.summary })),
     active.slot,
+    { recent: recentRoutes(chatId, 6), corrections: recentCorrections(chatId, 5) },
   );
 
   // Classifier failed or unsure → let the user decide (a misroute is costly).
@@ -396,13 +426,15 @@ async function decideRoute(
     return targetForSlot(chatId, CONTROL_SLOT);
   }
   if (route.confidence === 'low') {
-    return askRoute(ctx, chatId, text, threads, firstMsgId, 'Not sure which thread — pick one:');
+    const guessSlot = typeof route.target === 'number' ? route.target : undefined;
+    return askRoute(ctx, chatId, text, threads, firstMsgId, 'Not sure which thread — pick one:', guessSlot);
   }
 
   if (route.target === 'new') {
     const slot = createSession(chatId, 'New thread');
     setSessionTitle(chatId, slot, `${basename(config.workingDir)} #${slot + 1}`);
     await attachSession(ctx.api, chatId, slot);
+    logRoute(chatId, text, slot, titleOf(chatId, slot));
     return targetForSlot(chatId, slot);
   }
 
@@ -412,7 +444,10 @@ async function decideRoute(
     await ctx.reply(`🧭 → <b>${escapeHtml(titleOf(chatId, route.target))}</b>${reason}`, {
       parse_mode: 'HTML',
     });
+    // Remember this switch so a quick manual correction can be learned.
+    lastAutoRoute.set(chatId, { message: text, slot: route.target, ts: Date.now() });
   }
+  logRoute(chatId, text, route.target, titleOf(chatId, route.target));
   return targetForSlot(chatId, route.target);
 }
 
@@ -424,6 +459,7 @@ function askRoute(
   threads: ChatSession[],
   firstMsgId: number | undefined,
   prompt: string,
+  guessSlot?: number,
 ): null {
   const id = nextRouteId();
   const kb = new InlineKeyboard();
@@ -432,7 +468,7 @@ function askRoute(
     if (i % 2 === 1) kb.row();
   });
   kb.row().text('➕ New thread', `route:${id}:new`);
-  pendingRoute.set(id, { text, firstMsgId });
+  pendingRoute.set(id, { text, firstMsgId, guessSlot });
   void ctx.reply(`🧭 <b>${escapeHtml(prompt)}</b>`, { parse_mode: 'HTML', reply_markup: kb });
   return null;
 }
@@ -612,6 +648,12 @@ export function createBot(): Bot {
           parse_mode: 'HTML',
         })
         .catch(() => {});
+      // Log the pick — as a correction if it contradicts the router's guess.
+      const wrong =
+        pend.guessSlot !== undefined && pend.guessSlot !== routed.slot
+          ? { slot: pend.guessSlot, title: titleOf(chatId, pend.guessSlot) }
+          : undefined;
+      logRoute(chatId, pend.text, routed.slot, titleOf(chatId, routed.slot), wrong);
       await submitTo(ctx, routed, pend.text, pend.firstMsgId);
       return;
     }

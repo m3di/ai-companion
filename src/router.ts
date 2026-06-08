@@ -31,7 +31,7 @@ export interface Route {
 
 const SYSTEM = `You route messages in a chat that runs several parallel assistant threads.
 Given the user's new message and the list of active threads (each with a title and a short status), decide where the message belongs.
-Each request is independent — judge only by the thread list given in that request, not earlier ones.
+You may also be shown recent routing (the user's flow of thought — a follow-up usually continues the same thread) and past corrections (cases where you routed wrong and the user moved it — learn from them).
 Reply with ONE line of JSON and nothing else:
 {"target": <slot number, or "new", or "control">, "confidence": "high" | "low", "reason": "<≤8 words>"}
 Rules:
@@ -181,10 +181,16 @@ function parseRoute(text: string, slots: Set<number>): Route | null {
  * Classify a message against the active threads. Returns a routing decision, or
  * `null` if the classifier failed — callers should treat null as "ask the user".
  */
+export interface RouteContext {
+  recent?: Array<{ message: string; title: string }>;
+  corrections?: Array<{ message: string; title: string; wrong_title: string }>;
+}
+
 export async function routeMessage(
   message: string,
   threads: Thread[],
   activeSlot: number,
+  ctx: RouteContext = {},
 ): Promise<Route | null> {
   const list = threads
     .map((t) => {
@@ -193,7 +199,19 @@ export async function routeMessage(
       return `- slot ${t.slot}: ${t.title}${status}${here}`;
     })
     .join('\n');
-  const prompt = `Active threads:\n${list}\n\nNew message:\n"""\n${message.slice(0, 2000)}\n"""\n\nJSON:`;
+
+  const recent = ctx.recent?.length
+    ? `\n\nRecent routing (oldest first):\n${ctx.recent
+        .map((r) => `- "${r.message.slice(0, 80)}" → ${r.title}`)
+        .join('\n')}`
+    : '';
+  const corrections = ctx.corrections?.length
+    ? `\n\nPast corrections (you got these wrong — learn from them):\n${ctx.corrections
+        .map((c) => `- "${c.message.slice(0, 80)}" belongs to ${c.title}, not ${c.wrong_title}`)
+        .join('\n')}`
+    : '';
+
+  const prompt = `Active threads:\n${list}${recent}${corrections}\n\nNew message:\n"""\n${message.slice(0, 2000)}\n"""\n\nJSON:`;
   const text = await classify(prompt);
   if (text === null) return null;
   return parseRoute(text, new Set(threads.map((t) => t.slot)));
