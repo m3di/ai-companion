@@ -26,6 +26,12 @@ import { LiveStatus } from './liveStatus.js';
 
 export type Badge = 'idle' | 'running' | 'needsPerm' | 'asked' | 'error';
 
+// The concierge lives at a reserved virtual slot: it has no chat_sessions row
+// (so it stays out of work-thread lists, /close, /history and work-routing) but
+// stores its session/messages under the key "<chatId>:-1" like any thread.
+export const CONTROL_SLOT = -1;
+const CONTROL_LABEL = '⚙️ Bot';
+
 const NEW_LABEL = '➕ New session';
 const HISTORY_LABEL = '🗂 Closed sessions';
 
@@ -38,7 +44,7 @@ const badges = new Map<string, Badge>();
 const views = new Map<string, RunningView>();
 // The labels last rendered onto each chat's reply keyboard, mapped back to the
 // action they trigger. Matched against incoming text to detect a button tap.
-const lastLabels = new Map<number, Map<string, number | 'new' | 'history'>>();
+const lastLabels = new Map<number, Map<string, number | 'new' | 'history' | 'control'>>();
 
 function setBadge(key: string, badge: Badge): void {
   badges.set(key, badge);
@@ -78,6 +84,7 @@ export function activeSlot(chatId: number): number {
 }
 
 export function titleOf(chatId: number, slot: number): string {
+  if (slot === CONTROL_SLOT) return CONTROL_LABEL;
   return getSession(chatId, slot)?.title ?? `Session ${slot + 1}`;
 }
 
@@ -86,8 +93,13 @@ export function buildKeyboard(chatId: number): Keyboard {
   ensureChat(chatId);
   const active = activeSlot(chatId);
   const sessions = listSessions(chatId, 'active');
-  const labels = new Map<string, number | 'new' | 'history'>();
+  const labels = new Map<string, number | 'new' | 'history' | 'control'>();
   const kb = new Keyboard();
+
+  // The concierge is always the first button.
+  const controlLabel = `${active === CONTROL_SLOT ? '▶ ' : ''}${CONTROL_LABEL}`;
+  labels.set(controlLabel, 'control');
+  kb.text(controlLabel).row();
 
   sessions.forEach((s, i) => {
     const key = sessionKey(chatId, s.slot);
@@ -110,7 +122,10 @@ export function buildKeyboard(chatId: number): Keyboard {
 }
 
 /** Resolve an incoming text against the last keyboard shown. */
-export function matchButton(chatId: number, text: string): number | 'new' | 'history' | undefined {
+export function matchButton(
+  chatId: number,
+  text: string,
+): number | 'new' | 'history' | 'control' | undefined {
   return lastLabels.get(chatId)?.get(text);
 }
 

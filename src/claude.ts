@@ -38,8 +38,15 @@ export async function* askClaude(opts: {
   mcpServers?: Record<string, unknown>;
   cwd?: string;
   abortController?: AbortController;
+  // Extra context appended to the work-thread system prompt (shared memory).
+  appendContext?: string;
+  // Concierge mode: a custom string system prompt + a tool allowlist, replacing
+  // the Claude Code preset so it runs lean and focused on bot management.
+  concierge?: { systemPrompt: string; allowedTools: string[] };
 }): AsyncGenerator<ClaudeEvent> {
-  const append = readSystemPrompt();
+  const append =
+    readSystemPrompt() +
+    (opts.appendContext ? `\n\n## Shared memory (applies across all threads)\n${opts.appendContext}` : '');
 
   const stream = query({
     prompt: opts.prompt,
@@ -55,7 +62,9 @@ export async function* askClaude(opts: {
       ...(opts.mcpServers ? { mcpServers: opts.mcpServers as never } : {}),
       ...(opts.canUseTool ? { canUseTool: opts.canUseTool } : {}),
       ...(config.model ? { model: config.model } : {}),
-      systemPrompt: { type: 'preset', preset: 'claude_code', append },
+      ...(opts.concierge
+        ? { systemPrompt: opts.concierge.systemPrompt, allowedTools: opts.concierge.allowedTools, settingSources: [] }
+        : { systemPrompt: { type: 'preset' as const, preset: 'claude_code' as const, append } }),
     },
   });
 

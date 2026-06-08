@@ -71,6 +71,14 @@ db.exec(`
     chat_id     INTEGER PRIMARY KEY,
     active_slot INTEGER NOT NULL DEFAULT 0
   );
+
+  -- Bot-wide shared memory: facts/preferences true across every thread, curated
+  -- by the concierge and injected into each work thread's prompt.
+  CREATE TABLE IF NOT EXISTS shared_memory (
+    chat_id    INTEGER PRIMARY KEY,
+    content    TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
 `);
 
 // Each thread keeps a durable "memo": a short summary of what it's about and
@@ -163,6 +171,11 @@ const stmts = {
     'UPDATE chat_state SET auto_route = ? WHERE chat_id = ?',
   ),
   setPinned: db.prepare<[number, number]>('UPDATE chat_state SET pinned = ? WHERE chat_id = ?'),
+  getShared: db.prepare<[number]>('SELECT content FROM shared_memory WHERE chat_id = ?'),
+  setShared: db.prepare<[number, string]>(`
+    INSERT INTO shared_memory (chat_id, content, updated_at) VALUES (?, ?, datetime('now'))
+    ON CONFLICT(chat_id) DO UPDATE SET content = excluded.content, updated_at = datetime('now')
+  `),
 };
 
 export function getSessionId(key: string): string | undefined {
@@ -309,4 +322,14 @@ export function setAutoRoute(chatId: number, on: boolean): void {
 
 export function setPinned(chatId: number, on: boolean): void {
   stmts.setPinned.run(on ? 1 : 0, chatId);
+}
+
+/** Bot-wide shared memory, injected into every work thread's prompt. */
+export function getSharedMemory(chatId: number): string {
+  const row = stmts.getShared.get(chatId) as { content: string } | undefined;
+  return row?.content ?? '';
+}
+
+export function setSharedMemory(chatId: number, content: string): void {
+  stmts.setShared.run(chatId, content);
 }

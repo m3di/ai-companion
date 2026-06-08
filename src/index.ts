@@ -8,6 +8,7 @@ const me = await bot.api.getMe();
 
 await bot.api
   .setMyCommands([
+    { command: 'bot', description: 'Manage threads & memory (the concierge)' },
     { command: 'new', description: 'Start another thread' },
     { command: 'sessions', description: 'Show the thread keyboard' },
     { command: 'pin', description: 'Keep messages in the current thread (toggle)' },

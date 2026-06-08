@@ -24,7 +24,7 @@ export interface Thread {
 }
 
 export interface Route {
-  target: number | 'new';
+  target: number | 'new' | 'control';
   confidence: 'high' | 'low';
   reason?: string;
 }
@@ -33,11 +33,12 @@ const SYSTEM = `You route messages in a chat that runs several parallel assistan
 Given the user's new message and the list of active threads (each with a title and a short status), decide where the message belongs.
 Each request is independent — judge only by the thread list given in that request, not earlier ones.
 Reply with ONE line of JSON and nothing else:
-{"target": <slot number, or "new">, "confidence": "high" | "low", "reason": "<≤8 words>"}
+{"target": <slot number, or "new", or "control">, "confidence": "high" | "low", "reason": "<≤8 words>"}
 Rules:
 - Prefer the currently active thread for follow-ups, acknowledgements, or short replies.
 - Pick another thread only when the message clearly concerns that thread's topic.
 - Use "new" only when the message clearly fits none of the threads.
+- Use "control" when the message is about the BOT ITSELF rather than work — managing threads (list/close/rename/switch), bot settings, or remembering a fact/preference for later ("remember that…", "how many threads do I have?", "close the visa one", "what's my working dir?").
 - Use "high" only when you are confident; otherwise "low".`;
 
 // Reset the warm session after this many classifications to bound context.
@@ -165,9 +166,11 @@ function parseRoute(text: string, slots: Set<number>): Route | null {
   const target =
     obj.target === 'new'
       ? 'new'
-      : typeof obj.target === 'number' && slots.has(obj.target)
-        ? obj.target
-        : null;
+      : obj.target === 'control'
+        ? 'control'
+        : typeof obj.target === 'number' && slots.has(obj.target)
+          ? obj.target
+          : null;
   if (target === null) return null;
   const confidence = obj.confidence === 'high' ? 'high' : 'low';
   const reason = typeof obj.reason === 'string' ? obj.reason.slice(0, 60) : undefined;

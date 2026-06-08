@@ -11,6 +11,7 @@ import {
   getMemo,
   getPrefs,
   getSessionId,
+  getSharedMemory,
   listSessions,
   logMessage,
   messageCount,
@@ -27,9 +28,17 @@ import { describeTool, escapeHtml, fileOpMessage } from './format.js';
 import { createCanUseTool, resolvePermission } from './permissions.js';
 import { routeMessage } from './router.js';
 import {
+  buildConciergeServer,
+  conciergeSystemPrompt,
+  CONCIERGE_TOOLS,
+  resolveConfirm,
+  takePendingSwitch,
+} from './concierge.js';
+import {
   activeSlot,
   attachSession,
   buildKeyboard,
+  CONTROL_SLOT,
   ensureChat,
   matchButton,
   RunningView,
@@ -166,13 +175,22 @@ function sessionListKeyboard(chatId: number, sessions: ChatSession[], prefix: st
 async function runTurn(ctx: Context, target: Target, text: string, userMsgId?: number): Promise<void> {
   await react(ctx, target.chatId, userMsgId, '✍');
 
+  const isControl = target.slot === CONTROL_SLOT;
   const view = new RunningView(ctx, target.chatId, target.slot);
   await view.begin();
   const canUseTool = createCanUseTool(view);
   const prefs = getPrefs(target.key);
-  const permissionMode = (prefs.permissionMode as PermissionMode) ?? config.permissionMode;
+  const permissionMode = isControl
+    ? 'bypassPermissions'
+    : (prefs.permissionMode as PermissionMode) ?? config.permissionMode;
   const cwd = prefs.cwd ?? config.workingDir;
-  const mcpServers = { telegram: buildUiServer(view) };
+  const mcpServers = isControl
+    ? { bot: buildConciergeServer(view), telegram: buildUiServer(view) }
+    : { telegram: buildUiServer(view) };
+  const concierge = isControl
+    ? { systemPrompt: conciergeSystemPrompt(target.chatId), allowedTools: CONCIERGE_TOOLS }
+    : undefined;
+  const appendContext = isControl ? undefined : getSharedMemory(target.chatId).trim() || undefined;
   const abortController = new AbortController();
   running.set(target.key, abortController);
 
@@ -182,10 +200,13 @@ async function runTurn(ctx: Context, target: Target, text: string, userMsgId?: n
     for await (const ev of askClaude({
       prompt: text,
       resume,
-      canUseTool,
+      // The concierge runs bypassPermissions with a fixed safe toolset — no gate.
+      canUseTool: isControl ? undefined : canUseTool,
       permissionMode,
       cwd,
       mcpServers,
+      concierge,
+      appendContext,
       abortController,
     })) {
       switch (ev.kind) {
@@ -225,6 +246,12 @@ async function runTurn(ctx: Context, target: Target, text: string, userMsgId?: n
     running.delete(target.key);
     await view.finish(ok);
     await react(ctx, target.chatId, userMsgId, abortController.signal.aborted ? '🤔' : ok ? '👍' : '😱');
+    // The concierge defers thread switches until after its reply, so changing
+    // the active thread mid-turn doesn't suppress its own output. Apply it now.
+    if (isControl) {
+      const sw = takePendingSwitch(target.chatId);
+      if (sw !== undefined) await attachSession(ctx.api, target.chatId, sw);
+    }
   }
 }
 
@@ -299,7 +326,8 @@ async function flushInbox(key: string): Promise<void> {
 /** Log the prompt to its thread and run it (asking for a mode first if new). */
 async function submitTo(ctx: Context, target: Target, text: string, firstMsgId?: number): Promise<void> {
   logMessage(target.key, 'user', text);
-  if (getMode(target.key) === undefined) {
+  // The concierge runs with a fixed permission mode — never ask for one.
+  if (target.slot !== CONTROL_SLOT && getMode(target.key) === undefined) {
     pendingPrompt.set(target.key, text);
     await askForMode(ctx);
     return;
@@ -336,6 +364,8 @@ async function decideRoute(
   const settings = getChatSettings(chatId);
   const threads = listSessions(chatId, 'active');
 
+  // Already in the concierge: talk to it directly, don't work-route.
+  if (active.slot === CONTROL_SLOT) return active;
   // Nothing to decide: routing off, pinned, a single thread, or an obvious
   // follow-up (short message / acknowledgement) that stays in the active thread.
   if (!settings.autoRoute || settings.pinned || threads.length <= 1) return active;
@@ -350,6 +380,13 @@ async function decideRoute(
 
   // Classifier failed or unsure → let the user decide (a misroute is costly).
   if (!route) return askRoute(ctx, chatId, text, threads, firstMsgId, 'Which thread is this for?');
+
+  // About the bot itself → the concierge. A wrong control route is cheap (it
+  // just answers / confirms), so we don't gate it on confidence.
+  if (route.target === 'control') {
+    if (active.slot !== CONTROL_SLOT) await attachSession(ctx.api, chatId, CONTROL_SLOT);
+    return targetForSlot(chatId, CONTROL_SLOT);
+  }
   if (route.confidence === 'low') {
     return askRoute(ctx, chatId, text, threads, firstMsgId, 'Not sure which thread — pick one:');
   }
@@ -413,6 +450,7 @@ export function createBot(): Bot {
     ensureChat(ctx.chat!.id);
     await ctx.reply(
       'Connected. This chat runs several Claude threads at once. Just talk — I route each message to the matching thread (and tell you when I switch). The buttons below switch manually; every thread keeps running.\n' +
+        'Tap ⚙️ Bot (or /bot) to manage threads & memory by talking to the bot itself.\n' +
         '/new — start another thread\n' +
         '/sessions — show the thread keyboard\n' +
         '/pin — keep messages in the current thread (toggle)\n' +
@@ -431,11 +469,16 @@ export function createBot(): Bot {
     return ctx.reply('🗂 Your sessions — tap to switch:', { reply_markup: buildKeyboard(ctx.chat!.id) });
   });
 
+  bot.command('bot', (ctx) => switchTo(ctx, CONTROL_SLOT));
+
   bot.command('new', (ctx) => createAndAttach(ctx));
 
   bot.command('close', async (ctx) => {
     const chatId = ctx.chat!.id;
     const slot = activeSlot(chatId);
+    if (slot === CONTROL_SLOT) {
+      return ctx.reply('The ⚙️ Bot thread can’t be closed. Tap a thread to switch to it.');
+    }
     cancelSession(sessionKey(chatId, slot));
     const title = titleOf(chatId, slot);
     setSessionStatus(chatId, slot, 'closed');
@@ -605,6 +648,18 @@ export function createBot(): Bot {
       return;
     }
 
+    // Concierge destructive-action confirmation (e.g. close a thread).
+    if (data.startsWith('cfm:')) {
+      const [, id, yes] = data.split(':');
+      await ctx.answerCallbackQuery();
+      if (id && resolveConfirm(id, yes === '1')) {
+        await ctx
+          .editMessageText(yes === '1' ? '✅ Confirmed.' : 'Cancelled.', {})
+          .catch(() => {});
+      }
+      return;
+    }
+
     if (resolvePermission(data)) {
       await ctx.answerCallbackQuery();
       return;
@@ -621,6 +676,7 @@ export function createBot(): Bot {
     // A tap on the bottom reply keyboard arrives as a normal text message.
     const btn = matchButton(chatId, text);
     if (btn === 'new') return void createAndAttach(ctx);
+    if (btn === 'control') return void switchTo(ctx, CONTROL_SLOT);
     if (btn === 'history') {
       const closed = listSessions(chatId, 'closed');
       if (closed.length === 0) return void ctx.reply('No closed sessions.');
