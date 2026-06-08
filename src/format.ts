@@ -17,6 +17,7 @@ export const SAFE_TOOLS = new Set([
   'mcp__telegram__send',
   'mcp__telegram__ask',
   'mcp__telegram__askUserQuestion',
+  'mcp__telegram__setMemo',
 ]);
 
 export function escapeHtml(s: string): string {

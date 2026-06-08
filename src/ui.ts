@@ -1,6 +1,7 @@
 import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk';
 import { InlineKeyboard } from 'grammy';
 import { z } from 'zod';
+import { setMemo } from './db.js';
 import { escapeHtml } from './format.js';
 import type { RunningView } from './sessions.js';
 
@@ -44,6 +45,7 @@ const INSTRUCTIONS = `You reach the user through a Telegram chat. Your normal re
 - telegram · send — deliver a message written in raw Telegram HTML, optionally with inline buttons. Use it when plain prose can't express the layout: an expandable detail section <blockquote expandable>…</blockquote>, a spoiler <tg-spoiler>…</tg-spoiler>, code <pre><code>…</code></pre>, a link button to a PR/file, or a compact menu.
 - telegram · ask — pose a single quick question with tappable options and wait for the answer. Use it to branch on one decision instead of guessing (which file, which branch, proceed or not).
 - telegram · askUserQuestion — ask up to 4 decisions at once, each option carrying a one-line explanation, rendered as tappable buttons. This is how you ask structured questions here. The built-in AskUserQuestion tool does NOT work in this chat — always use this instead.
+- telegram · setMemo — keep this thread labeled and resumable. This chat runs several parallel threads, each shown as a button; setMemo sets this thread's title and a short status. Call it when the thread's purpose becomes clear or shifts, or after meaningful progress, so the user can tell threads apart and the thread can be picked up again if its context is lost. It's cheap and silent — don't ask permission, just keep it current.
 
 Rules:
 - For an ordinary answer, just reply normally. Do NOT also send the same text via 'send' — that double-posts. Use 'send' for the things prose can't do.
@@ -214,10 +216,25 @@ export function buildUiServer(view: RunningView) {
     },
   );
 
+  const setMemoTool = tool(
+    'setMemo',
+    "Record or update this thread's memo — a short title and a 1-3 line status of what it's about and where it stands. The title labels this thread's button; the memo lets the thread be resumed if context is lost. Call it when the thread's purpose becomes clear or shifts, or after meaningful progress. Cheap and silent — use it freely.",
+    {
+      title: z.string().describe('Short thread label, ≤4 words (e.g. "Slovenia visa", "scraper bug")'),
+      summary: z
+        .string()
+        .describe('1-3 lines: what this thread is about and its current state / next step'),
+    },
+    async (args) => {
+      setMemo(view.chatId, view.slot, args.title.slice(0, 60), args.summary);
+      return { content: [{ type: 'text' as const, text: 'Memo saved.' }] };
+    },
+  );
+
   return createSdkMcpServer({
     name: 'telegram',
     version: '1.0.0',
     instructions: INSTRUCTIONS,
-    tools: [send, ask, askUserQuestion],
+    tools: [send, ask, askUserQuestion, setMemoTool],
   });
 }

@@ -4,6 +4,7 @@ import {
   countSessions,
   createSession,
   getActiveSlot,
+  getMemo,
   getSession,
   listSessions,
   recentMessages,
@@ -281,9 +282,11 @@ export async function attachSession(api: Api, chatId: number, slot: number): Pro
 
   const running = views.has(sessionKey(chatId, slot));
   const head = `📎 <b>${escapeHtml(title)}</b>${running ? ' · 🟢 running' : ''}`;
+  const memo = getMemo(chatId, slot)?.summary;
+  const memoLine = memo ? `\n<i>${escapeHtml(memo)}</i>` : '';
   await api.sendMessage(
     chatId,
-    `${head}\n<blockquote expandable>${transcript}</blockquote>`,
+    `${head}${memoLine}\n<blockquote expandable>${transcript}</blockquote>`,
     { parse_mode: 'HTML', reply_markup: buildKeyboard(chatId) },
   );
 

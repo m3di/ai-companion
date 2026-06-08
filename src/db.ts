@@ -73,6 +73,14 @@ db.exec(`
   );
 `);
 
+// Each thread keeps a durable "memo": a short summary of what it's about and
+// where it's at, written by the session itself via the setMemo tool. It labels
+// the thread, enriches catch-up, and (later) feeds the auto-router.
+const hasMemo = db
+  .prepare("SELECT 1 FROM pragma_table_info('chat_sessions') WHERE name = 'memo'")
+  .get();
+if (!hasMemo) db.exec('ALTER TABLE chat_sessions ADD COLUMN memo TEXT');
+
 const stmts = {
   getSession: db.prepare<[string]>('SELECT session_id FROM sessions WHERE session_key = ?'),
   setSession: db.prepare<[string, string]>(`
@@ -123,6 +131,12 @@ const stmts = {
   ),
   setSessionTitle: db.prepare<[string, number, number]>(
     'UPDATE chat_sessions SET title = ? WHERE chat_id = ? AND slot = ?',
+  ),
+  setMemo: db.prepare<[string, string, number, number]>(
+    "UPDATE chat_sessions SET title = ?, memo = ?, last_active = datetime('now') WHERE chat_id = ? AND slot = ?",
+  ),
+  getMemo: db.prepare<[number, number]>(
+    'SELECT title, memo FROM chat_sessions WHERE chat_id = ? AND slot = ?',
   ),
   touchSession: db.prepare<[number, number]>(
     "UPDATE chat_sessions SET last_active = datetime('now') WHERE chat_id = ? AND slot = ?",
@@ -228,6 +242,23 @@ export function setSessionStatus(chatId: number, slot: number, status: 'active' 
 
 export function setSessionTitle(chatId: number, slot: number, title: string): void {
   stmts.setSessionTitle.run(title, chatId, slot);
+}
+
+export interface Memo {
+  title: string;
+  summary?: string;
+}
+
+/** Write a thread's memo (also updates its title, used on the keyboard). */
+export function setMemo(chatId: number, slot: number, title: string, summary: string): void {
+  stmts.setMemo.run(title, summary, chatId, slot);
+}
+
+export function getMemo(chatId: number, slot: number): Memo | undefined {
+  const row = stmts.getMemo.get(chatId, slot) as
+    | { title: string; memo: string | null }
+    | undefined;
+  return row ? { title: row.title, summary: row.memo ?? undefined } : undefined;
 }
 
 export function touchSession(chatId: number, slot: number): void {

@@ -7,6 +7,7 @@ import { askClaude } from './claude.js';
 import {
   type ChatSession,
   createSession,
+  getMemo,
   getPrefs,
   getSessionId,
   listSessions,
@@ -117,8 +118,10 @@ function statusText(target: Target): string {
   const sessionId = getSessionId(target.key);
   const prefs = getPrefs(target.key);
   const mode = prefs.permissionMode;
+  const memo = getMemo(target.chatId, target.slot)?.summary;
   return (
     `Session: ${titleOf(target.chatId, target.slot)} (slot ${target.slot})\n` +
+    (memo ? `Memo: ${memo}\n` : '') +
     `Claude session: ${sessionId ?? 'none (starts on next message)'}\n` +
     `Permission mode: ${mode ? MODE_LABEL[mode] ?? mode : 'not chosen yet'}\n` +
     `Working dir: ${prefs.cwd ?? config.workingDir}\n` +
@@ -240,6 +243,54 @@ async function enqueueTurn(ctx: Context, target: Target, text: string, userMsgId
     busy.delete(target.key);
     queues.delete(target.key);
   }
+}
+
+// Telegram caps a message at 4096 chars and the client splits a long paste into
+// several separate messages with no "these are one" marker. We coalesce a burst
+// of messages into a single prompt: each arrival resets a short debounce, and a
+// near-max-length chunk (almost certainly mid-split) waits longer for the rest.
+const COALESCE_MS = 600;
+const COALESCE_SPLIT_MS = 2500;
+const SPLIT_LEN = 4000;
+
+interface Inbox {
+  ctx: Context;
+  target: Target;
+  texts: string[];
+  firstMsgId?: number;
+  timer?: NodeJS.Timeout;
+}
+const inbox = new Map<string, Inbox>();
+
+/** Buffer a message and (re)arm the debounce that flushes the coalesced turn. */
+function bufferMessage(ctx: Context, target: Target, text: string, msgId: number): void {
+  let buf = inbox.get(target.key);
+  if (!buf) {
+    buf = { ctx, target, texts: [], firstMsgId: msgId };
+    inbox.set(target.key, buf);
+  }
+  buf.ctx = ctx;
+  buf.texts.push(text);
+  if (buf.timer) clearTimeout(buf.timer);
+  const wait = text.length >= SPLIT_LEN ? COALESCE_SPLIT_MS : COALESCE_MS;
+  buf.timer = setTimeout(() => void flushInbox(target.key), wait);
+}
+
+/** Combine a burst into one prompt and run it (or ask for a mode first). */
+async function flushInbox(key: string): Promise<void> {
+  const buf = inbox.get(key);
+  if (!buf) return;
+  inbox.delete(key);
+  if (buf.timer) clearTimeout(buf.timer);
+  const text = buf.texts.join('\n');
+  logMessage(buf.target.key, 'user', text);
+
+  if (getMode(buf.target.key) === undefined) {
+    pendingPrompt.set(buf.target.key, text);
+    await askForMode(buf.ctx);
+    return;
+  }
+  await enqueueTurn(buf.ctx, buf.target, text, buf.firstMsgId);
 }
 
 export function createBot(): Bot {
@@ -423,16 +474,9 @@ export function createBot(): Bot {
     }
     if (typeof btn === 'number') return void switchTo(ctx, btn);
 
-    const target = activeTarget(chatId);
-    logMessage(target.key, 'user', text);
-
-    if (getMode(target.key) === undefined) {
-      pendingPrompt.set(target.key, text);
-      await askForMode(ctx);
-      return;
-    }
-
-    await enqueueTurn(ctx, target, text, ctx.message.message_id);
+    // Coalesce back-to-back messages (e.g. a long paste Telegram split) into one
+    // turn instead of starting on the first and queueing the rest.
+    bufferMessage(ctx, activeTarget(chatId), text, ctx.message.message_id);
   });
 
   bot.catch((err) => console.error('[bot] error', err));
