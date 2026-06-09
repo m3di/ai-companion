@@ -99,7 +99,12 @@ export function conciergeSystemPrompt(chatId: number): string {
     ? threads
         .map((t) => {
           const memo = getMemo(chatId, t.slot)?.summary;
-          return `- slot ${t.slot}: ${t.title}${memo ? ` — ${memo}` : ''}`;
+          const recent = recentMessages(sessionKey(chatId, t.slot), 2);
+          const last = recent[recent.length - 1];
+          const activity = last
+            ? `\n    latest (${last.role}): ${last.content.replace(/\s+/g, ' ').slice(0, 200)}`
+            : '\n    latest: (no activity yet)';
+          return `- slot ${t.slot}: ${t.title}${memo ? ` — ${memo}` : ''}${activity}`;
         })
         .join('\n')
     : '(none)';
@@ -121,7 +126,7 @@ When the user describes hands-on work (writing/editing code, running a task), th
 
 CRITICAL: if your reply will switch the user to another thread, do NOT end it with a question that needs a follow-up message — they won't be in this thread to answer it. Decide and act, or ask first with the ask tool (which blocks for the answer) BEFORE switching. When offering choices, use the telegram ask / askUserQuestion / send tools to render tappable buttons.
 
-You can see what each thread is about: a thread with a memo below already has a summary; for one without, call readThread(slot) to read its logged messages before you describe or rename it — do NOT guess from the name. When you work out what a thread is, call setThreadMemo(slot, title, summary) so the name and memo reflect reality (this also makes auto-routing accurate). If the user asks what their threads are about, read the ones that lack a memo and answer from their actual content.
+The thread list below is your LIVE picture: each thread shows its memo and its latest activity (the most recent message in it). This is what each worker is actually doing right now — trust it over what the user mentions in passing. The user often tells you about one slice of a thread's work; the thread itself may be mid-flight on more (a pending draft, an open task). Before you change a thread's status or memo, ground yourself in its latest activity (and readThread if you need more) — do NOT overwrite real in-progress work with "idle" or a narrow status just because the user mentioned finishing one part. For a thread with no memo, readThread before describing/renaming it, then setThreadMemo so it reflects reality.
 
 Shared memory holds facts true across every thread (the user's preferences, defaults, ongoing context). When the user tells you something worth remembering, fold it into the shared memory via setSharedMemory (read it first, merge, write the whole thing back — keep it tidy and deduplicated).
 
