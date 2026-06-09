@@ -17,6 +17,7 @@ import {
   logRoute,
   messageCount,
   recentCorrections,
+  recentMessages,
   recentRoutes,
   sessionKey,
   setAutoRoute,
@@ -196,7 +197,10 @@ async function runTurn(ctx: Context, target: Target, text: string, userMsgId?: n
   await react(ctx, target.chatId, userMsgId, '✍');
 
   const isControl = target.slot === CONTROL_SLOT;
-  const view = new RunningView(ctx, target.chatId, target.slot);
+  // A concierge turn running while the user is elsewhere (a completion notice):
+  // force its reply to post so the notification isn't swallowed.
+  const forceVisible = isControl && activeSlot(target.chatId) !== CONTROL_SLOT;
+  const view = new RunningView(ctx, target.chatId, target.slot, forceVisible);
   await view.begin();
   const canUseTool = createCanUseTool(view);
   const prefs = getPrefs(target.key);
@@ -285,8 +289,31 @@ async function runTurn(ctx: Context, target: Target, text: string, userMsgId?: n
           await submitTo(ctx, targetForSlot(target.chatId, sw), seed.text);
         }
       }
+    } else if (!view.isAttached() && !abortController.signal.aborted) {
+      // A background worker finished while the user was elsewhere → wake the
+      // concierge to decide whether and how to report it.
+      void notifyCompletion(ctx, target, ok);
     }
   }
+}
+
+/**
+ * Wake the concierge after a background worker completes: hand it the worker's
+ * result and let it decide whether to notify the user and what to suggest. Runs
+ * as a normal concierge turn, so its reply (via the send tool) reaches the chat
+ * even if the user is in another thread. Fire-and-forget.
+ */
+async function notifyCompletion(ctx: Context, worker: Target, ok: boolean): Promise<void> {
+  const title = titleOf(worker.chatId, worker.slot);
+  const recent = recentMessages(worker.key, 8)
+    .map((m) => `${m.role === 'user' ? 'Task' : 'Worker'}: ${m.content.slice(0, 500)}`)
+    .join('\n');
+  const prompt =
+    `[SYSTEM EVENT] The background worker "${title}" just ${ok ? 'finished' : 'stopped with an error'}. ` +
+    `Its recent activity:\n${recent}\n\n` +
+    `If this is worth telling the user, deliver ONE concise notice with the telegram send tool — what got done, ` +
+    `and offer a sensible next step as an inline reply button if useful. If it's trivial or just an acknowledgement, do nothing.`;
+  await enqueueTurn(ctx, targetForSlot(worker.chatId, CONTROL_SLOT), prompt);
 }
 
 /** Serialize turns per session: run now if idle, else queue. */

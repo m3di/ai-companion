@@ -115,6 +115,8 @@ export class RunningView {
     private readonly ctx: Context,
     readonly chatId: number,
     readonly slot: number,
+    // Post the final reply even when detached (a background concierge notice).
+    private readonly forceVisible = false,
   ) {}
 
   get key(): string {
@@ -190,7 +192,7 @@ export class RunningView {
   }
 
   async answer(text: string): Promise<void> {
-    if (this.isAttached()) await sendAnswer(this.api, this.chatId, text);
+    if (this.isAttached() || this.forceVisible) await sendAnswer(this.api, this.chatId, text);
   }
 
   /** Mark the session blocked on a user interaction (permission / ask). */
@@ -209,16 +211,9 @@ export class RunningView {
     views.delete(this.key);
     this.stopTyping();
     setBadge(this.key, ok ? 'idle' : 'error');
-    if (this.isAttached()) {
-      if (this.status) await this.status.finalize(ok);
-    } else {
-      const icon = ok ? '✅' : '⚠️';
-      await notifyBackground(
-        this.api,
-        this.chatId,
-        `${icon} <b>${escapeHtml(this.title)}</b> ${ok ? 'finished' : 'stopped'} — open it with /sessions.`,
-      );
-    }
+    // Attached: finalize the live status. Detached: stay silent here — telegram
+    // wakes the concierge to decide how to report a background completion.
+    if (this.isAttached() && this.status) await this.status.finalize(ok);
   }
 }
 
