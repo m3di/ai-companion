@@ -8,9 +8,9 @@ const me = await bot.api.getMe();
 
 await bot.api
   .setMyCommands([
-    { command: 'bot', description: 'Manage threads & memory (the concierge)' },
+    { command: 'sessions', description: 'List your threads, tap to switch' },
     { command: 'new', description: 'Start another thread' },
-    { command: 'sessions', description: 'Show the thread keyboard' },
+    { command: 'bot', description: 'Manage threads & memory (the concierge)' },
     { command: 'pin', description: 'Keep messages in the current thread (toggle)' },
     { command: 'auto', description: 'Turn auto-routing on/off' },
     { command: 'close', description: 'Close the current thread' },

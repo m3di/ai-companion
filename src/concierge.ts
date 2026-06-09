@@ -36,6 +36,7 @@ import type { RunningView } from './sessions.js';
 export const CONCIERGE_TOOLS = [
   'mcp__bot__listThreads',
   'mcp__bot__readThread',
+  'mcp__bot__dispatchTask',
   'mcp__bot__newThread',
   'mcp__bot__switchThread',
   'mcp__bot__setThreadMemo',
@@ -66,6 +67,16 @@ export function takePendingSeed(chatId: number): { slot: number; text: string } 
   return seed;
 }
 
+// Fire-and-forget tasks: run on a worker headless while the user stays with the
+// concierge (the "dispatch + detach" move). Applied by telegram.ts after the
+// concierge's turn, without switching the active thread.
+const pendingDispatch = new Map<number, Array<{ slot: number; text: string }>>();
+export function takePendingDispatch(chatId: number): Array<{ slot: number; text: string }> {
+  const list = pendingDispatch.get(chatId) ?? [];
+  pendingDispatch.delete(chatId);
+  return list;
+}
+
 // Destructive-action confirmations, resolved by an inline button tap.
 const pendingConfirm = new Map<string, (yes: boolean) => void>();
 let cseq = 0;
@@ -93,9 +104,18 @@ export function conciergeSystemPrompt(chatId: number): string {
         .join('\n')
     : '(none)';
 
-  return `You are the concierge for a Telegram bot that runs several parallel Claude Code threads for one user. You help them manage their threads and the bot's shared memory, and answer questions about the bot's state. You are NOT a coding agent — you only use the bot tools below.
+  return `You are the concierge — the director and home base of a Telegram bot that runs several parallel Claude Code worker threads for one user. The user talks to YOU; you decide what reaches the workers. You are NOT a coding agent yourself — you only use the bot tools below. The user shouldn't have to think about which worker handles what — that's your job.
 
-Be concise and action-oriented. When asked to do something, use a tool rather than just describing it — and don't ask permission for non-destructive actions like setting a memo or renaming; just do them (only closing a thread confirms, automatically). Switching to or creating a thread takes effect right after your reply.
+For each message, choose ONE of three moves:
+1. HANDLE IT YOURSELF — questions about the bot, thread status (use readThread / listThreads), managing threads, or updating shared memory. Just answer.
+2. DISPATCH + DETACH (dispatchTask) — hand a task to a worker that runs in the background while the user stays here with you. Use for fire-and-forget work, or when the user wants to keep talking to you rather than dive in. Give the worker the FULL task plus any context from other threads it would need. The user can ask you for its status later.
+3. CONNECT THROUGH (switchThread / newThread with a task) — switch the user into a worker so they converse with it directly. Use for interactive, iterative work they'll want to watch.
+
+Default: for substantial work the user will want to follow, CONNECT THROUGH; for quick or background tasks, DISPATCH. When unsure, ask with the ask tool. Before handing a worker new context, consider reading its current state (readThread) — if the new task doesn't fit or would derail it, prefer a fresh worker.
+
+Be concise and action-oriented. Use a tool rather than just describing what you'd do — and don't ask permission for non-destructive actions like setting a memo or renaming; just do them (only closing a thread confirms, automatically).
+
+Always refer to threads by their TITLE, never by slot number — slot numbers are internal and confuse the user. If the user names a thread ambiguously, confirm which title you mean before acting.
 
 When the user describes hands-on work (writing/editing code, running a task), that belongs in a worker thread, not here. DELEGATE it: pick the right existing thread or create one with newThread, and pass the full task (with all the context the user gave you — links, decisions, constraints) plus a memo. The worker starts on the task automatically — never tell the user to paste a summary themselves.
 
@@ -152,9 +172,43 @@ export function buildConciergeServer(view: RunningView) {
     },
   );
 
+  const dispatchTask = tool(
+    'dispatchTask',
+    'DISPATCH + DETACH: hand a task to a worker that runs in the BACKGROUND while the user stays here with you — they are NOT switched into it. Use for fire-and-forget work, or when the user wants to keep talking to you. Give the full task with all context. Pass slot for an existing worker, or title to spin up a new one. The worker reports back when done; the user can ask you for its status anytime.',
+    {
+      slot: z.number().optional().describe('Existing worker slot (omit to create a new one)'),
+      title: z.string().optional().describe('Title for a new worker (if no slot given)'),
+      task: z.string().describe('Full instruction to hand the worker, with all context'),
+      memo: z.string().optional().describe('1-2 line summary of what this worker is about'),
+    },
+    async (args) => {
+      let slot: number;
+      let label: string;
+      if (args.slot !== undefined) {
+        const s = getSession(chatId, args.slot);
+        if (!s || s.status !== 'active') {
+          return { content: [{ type: 'text' as const, text: `No active worker at slot ${args.slot}.` }], isError: true };
+        }
+        slot = args.slot;
+        label = s.title;
+        if (args.memo) setMemo(chatId, slot, s.title, args.memo);
+      } else if (args.title) {
+        slot = createSession(chatId, args.title.slice(0, 60));
+        label = args.title;
+        if (args.memo) setMemo(chatId, slot, args.title.slice(0, 60), args.memo);
+      } else {
+        return { content: [{ type: 'text' as const, text: 'Give a slot (existing worker) or a title (new worker).' }], isError: true };
+      }
+      const list = pendingDispatch.get(chatId) ?? [];
+      list.push({ slot, text: args.task });
+      pendingDispatch.set(chatId, list);
+      return { content: [{ type: 'text' as const, text: `Dispatched to "${label}" — running in the background. Ask me for its status anytime.` }] };
+    },
+  );
+
   const switchThread = tool(
     'switchThread',
-    'Switch the user to an existing thread after your reply. Optionally pass a task to hand that thread as a new instruction (with full context) so it starts working without the user re-pasting.',
+    'CONNECT THROUGH: switch the user into an existing thread after your reply so they talk to that worker directly. Optionally pass a task to hand it (with full context) so it starts without the user re-pasting. Use when the work is interactive and they will want to watch and iterate.',
     {
       slot: z.number().describe('Thread slot number'),
       task: z.string().optional().describe('Full instruction to hand the worker, with all context'),
@@ -267,6 +321,6 @@ export function buildConciergeServer(view: RunningView) {
     name: 'bot',
     version: '1.0.0',
     instructions: 'Tools to manage the bot: threads, routing, and shared memory.',
-    tools: [listThreads, readThread, newThread, switchThread, setThreadMemo, closeThread, getShared, setShared, setRouting],
+    tools: [listThreads, readThread, dispatchTask, newThread, switchThread, setThreadMemo, closeThread, getShared, setShared, setRouting],
   });
 }

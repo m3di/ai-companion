@@ -1,8 +1,7 @@
 import type { Api, Context } from 'grammy';
-import { InlineKeyboard, Keyboard } from 'grammy';
+import { InlineKeyboard } from 'grammy';
 import {
   countSessions,
-  createSession,
   getActiveSlot,
   getMemo,
   getSession,
@@ -30,10 +29,7 @@ export type Badge = 'idle' | 'running' | 'needsPerm' | 'asked' | 'error';
 // (so it stays out of work-thread lists, /close, /history and work-routing) but
 // stores its session/messages under the key "<chatId>:-1" like any thread.
 export const CONTROL_SLOT = -1;
-const CONTROL_LABEL = '⚙️ Bot';
-
-const NEW_LABEL = '➕ New session';
-const HISTORY_LABEL = '🗂 Closed sessions';
+const CONTROL_LABEL = '🎛️ Concierge';
 
 const CATCHUP_LINES = 6;
 
@@ -42,9 +38,6 @@ const CATCHUP_LINES = 6;
 const badges = new Map<string, Badge>();
 // Live turn views, so a switch can attach/detach a turn that is mid-flight.
 const views = new Map<string, RunningView>();
-// The labels last rendered onto each chat's reply keyboard, mapped back to the
-// action they trigger. Matched against incoming text to detect a button tap.
-const lastLabels = new Map<number, Map<string, number | 'new' | 'history' | 'control'>>();
 
 function setBadge(key: string, badge: Badge): void {
   badges.set(key, badge);
@@ -69,13 +62,16 @@ function badgeIcon(badge: Badge): string {
   }
 }
 
-/** Ensure a chat has at least one session; preserve the legacy ":0" session. */
+/**
+ * Ensure a chat is initialised. New chats start at the concierge (home base);
+ * the legacy ":0" work session is preserved for existing chats.
+ */
 export function ensureChat(chatId: number): void {
+  // Home base: you always land in, and return to, the concierge.
+  if (getActiveSlot(chatId) === undefined) setActiveSlot(chatId, CONTROL_SLOT);
   if (countSessions(chatId, 'active') > 0) return;
   const existing = getSession(chatId, 0);
-  if (!existing) createSession(chatId, 'Session 1');
-  else if (existing.status === 'closed') setSessionStatus(chatId, 0, 'active');
-  if (getActiveSlot(chatId) === undefined) setActiveSlot(chatId, 0);
+  if (existing && existing.status === 'closed') setSessionStatus(chatId, 0, 'active');
 }
 
 export function activeSlot(chatId: number): number {
@@ -88,45 +84,10 @@ export function titleOf(chatId: number, slot: number): string {
   return getSession(chatId, slot)?.title ?? `Session ${slot + 1}`;
 }
 
-/** Build the bottom reply keyboard for a chat and record its label→action map. */
-export function buildKeyboard(chatId: number): Keyboard {
-  ensureChat(chatId);
-  const active = activeSlot(chatId);
-  const sessions = listSessions(chatId, 'active');
-  const labels = new Map<string, number | 'new' | 'history' | 'control'>();
-  const kb = new Keyboard();
-
-  // The concierge is always the first button.
-  const controlLabel = `${active === CONTROL_SLOT ? '▶ ' : ''}${CONTROL_LABEL}`;
-  labels.set(controlLabel, 'control');
-  kb.text(controlLabel).row();
-
-  sessions.forEach((s, i) => {
-    const key = sessionKey(chatId, s.slot);
-    const marker = s.slot === active ? '▶ ' : '';
-    const label = `${marker}${badgeIcon(badgeOf(key))} ${s.title}`;
-    labels.set(label, s.slot);
-    kb.text(label);
-    if (i % 2 === 1) kb.row();
-  });
-
-  kb.row().text(NEW_LABEL);
-  labels.set(NEW_LABEL, 'new');
-  if (countSessions(chatId, 'closed') > 0) {
-    kb.text(HISTORY_LABEL);
-    labels.set(HISTORY_LABEL, 'history');
-  }
-
-  lastLabels.set(chatId, labels);
-  return kb.resized().persistent();
-}
-
-/** Resolve an incoming text against the last keyboard shown. */
-export function matchButton(
-  chatId: number,
-  text: string,
-): number | 'new' | 'history' | 'control' | undefined {
-  return lastLabels.get(chatId)?.get(text);
+/** A one-glyph status marker for a thread (running/needs-input), or '' if idle. */
+export function statusMarker(chatId: number, slot: number): string {
+  const badge = badgeOf(sessionKey(chatId, slot));
+  return badge === 'idle' ? '' : badgeIcon(badge);
 }
 
 async function sendAnswer(api: Api, chatId: number, text: string): Promise<void> {
@@ -255,7 +216,7 @@ export class RunningView {
       await notifyBackground(
         this.api,
         this.chatId,
-        `${icon} <b>${escapeHtml(this.title)}</b> ${ok ? 'finished' : 'stopped'} — tap to view.`,
+        `${icon} <b>${escapeHtml(this.title)}</b> ${ok ? 'finished' : 'stopped'} — open it with /sessions.`,
       );
     }
   }
@@ -265,10 +226,10 @@ function stopKeyboard(): InlineKeyboard {
   return new InlineKeyboard().text('🛑 Stop', 'stop');
 }
 
-/** Send a one-line notice that also refreshes the chat's bottom keyboard. */
+/** Send a one-line background notice (and clear any stale bottom keyboard). */
 export async function notifyBackground(api: Api, chatId: number, html: string): Promise<void> {
   await api
-    .sendMessage(chatId, html, { parse_mode: 'HTML', reply_markup: buildKeyboard(chatId) })
+    .sendMessage(chatId, html, { parse_mode: 'HTML', reply_markup: { remove_keyboard: true } })
     .catch(() => {});
 }
 
@@ -296,13 +257,14 @@ export async function attachSession(api: Api, chatId: number, slot: number): Pro
     : '<i>No messages yet.</i>';
 
   const running = views.has(sessionKey(chatId, slot));
-  const head = `📎 <b>${escapeHtml(title)}</b>${running ? ' · 🟢 running' : ''}`;
+  const here = slot === CONTROL_SLOT ? "You're now talking to the" : "You're now in";
+  const head = `📍 ${here} <b>${escapeHtml(title)}</b>${running ? ' · 🟢 running' : ''}`;
   const memo = getMemo(chatId, slot)?.summary;
   const memoLine = memo ? `\n<i>${escapeHtml(memo)}</i>` : '';
   await api.sendMessage(
     chatId,
     `${head}${memoLine}\n<blockquote expandable>${transcript}</blockquote>`,
-    { parse_mode: 'HTML', reply_markup: buildKeyboard(chatId) },
+    { parse_mode: 'HTML', reply_markup: { remove_keyboard: true } },
   );
 
   if (running) await views.get(sessionKey(chatId, slot))?.attach();

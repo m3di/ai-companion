@@ -35,17 +35,17 @@ import {
   conciergeSystemPrompt,
   CONCIERGE_TOOLS,
   resolveConfirm,
+  takePendingDispatch,
   takePendingSeed,
   takePendingSwitch,
 } from './concierge.js';
 import {
   activeSlot,
   attachSession,
-  buildKeyboard,
   CONTROL_SLOT,
   ensureChat,
-  matchButton,
   RunningView,
+  statusMarker,
   titleOf,
 } from './sessions.js';
 import { buildUiServer, resolveAsk, takeQuickReply } from './ui.js';
@@ -177,6 +177,20 @@ function sessionListKeyboard(chatId: number, sessions: ChatSession[], prefix: st
   return kb;
 }
 
+/** The momentary switcher shown by /sessions: active thread marked, one per row. */
+function switcherKeyboard(chatId: number): InlineKeyboard {
+  const active = activeSlot(chatId);
+  const kb = new InlineKeyboard();
+  for (const s of listSessions(chatId, 'active')) {
+    const mark = s.slot === active ? '▶ ' : '';
+    const status = statusMarker(chatId, s.slot);
+    kb.text(`${mark}${status ? `${status} ` : ''}${s.title}`, `sw:${s.slot}`).row();
+  }
+  kb.text('➕ New', 'sw:new').text('🎛️ Concierge', 'sw:control');
+  if (listSessions(chatId, 'closed').length > 0) kb.text('🗂 Closed', 'sw:closed');
+  return kb;
+}
+
 /** Run one user turn against Claude Code, rendering progress through the view. */
 async function runTurn(ctx: Context, target: Target, text: string, userMsgId?: number): Promise<void> {
   await react(ctx, target.chatId, userMsgId, '✍');
@@ -252,10 +266,17 @@ async function runTurn(ctx: Context, target: Target, text: string, userMsgId?: n
     running.delete(target.key);
     await view.finish(ok);
     await react(ctx, target.chatId, userMsgId, abortController.signal.aborted ? '🤔' : ok ? '👍' : '😱');
-    // The concierge defers thread switches until after its reply, so changing
-    // the active thread mid-turn doesn't suppress its own output. Apply it now,
-    // then hand the worker its seeded task (delegation) as a fresh turn.
+    // Apply the concierge's deferred moves (after its reply, so they don't
+    // suppress its own output):
     if (isControl) {
+      // Dispatch + detach: run each task on its worker headless — the user
+      // stays here in the concierge, so the worker's output is suppressed.
+      for (const d of takePendingDispatch(target.chatId)) {
+        const wt = targetForSlot(target.chatId, d.slot);
+        logMessage(wt.key, 'user', d.text);
+        void enqueueTurn(ctx, wt, d.text);
+      }
+      // Connect through: switch the user into a worker and seed its task.
       const sw = takePendingSwitch(target.chatId);
       if (sw !== undefined) {
         await attachSession(ctx.api, target.chatId, sw);
@@ -493,24 +514,24 @@ export function createBot(): Bot {
   bot.command('start', async (ctx) => {
     ensureChat(ctx.chat!.id);
     await ctx.reply(
-      'Connected. This chat runs several Claude threads at once. Just talk — I route each message to the matching thread (and tell you when I switch). The buttons below switch manually; every thread keeps running.\n' +
-        'Tap ⚙️ Bot (or /bot) to manage threads & memory by talking to the bot itself.\n' +
+      'Connected. This chat runs several Claude threads at once. Just talk — I route each message to the matching thread (and tell you when I switch). Every thread keeps running.\n\n' +
+        '/sessions — list your threads, tap to switch\n' +
         '/new — start another thread\n' +
-        '/sessions — show the thread keyboard\n' +
+        '/bot — the concierge: manage threads & memory by talking\n' +
         '/pin — keep messages in the current thread (toggle)\n' +
         '/auto — turn auto-routing on/off\n' +
         '/close — close the current thread\n' +
         '/history — reopen a closed thread\n' +
         '/cancel — stop the current thread’s turn\n' +
         '/cwd [path] — show or set this thread’s working directory\n' +
-        '/status — current thread info',
-      { reply_markup: buildKeyboard(ctx.chat!.id) },
+        '/status — what thread you’re in',
+      { reply_markup: { remove_keyboard: true } },
     );
   });
 
   bot.command('sessions', (ctx) => {
     ensureChat(ctx.chat!.id);
-    return ctx.reply('🗂 Your sessions — tap to switch:', { reply_markup: buildKeyboard(ctx.chat!.id) });
+    return ctx.reply('🗂 Your threads — tap to switch:', { reply_markup: switcherKeyboard(ctx.chat!.id) });
   });
 
   bot.command('bot', (ctx) => switchTo(ctx, CONTROL_SLOT));
@@ -588,7 +609,7 @@ export function createBot(): Bot {
     const dir = expandPath(arg);
     setCwd(target.key, dir);
     setSessionTitle(chatId, target.slot, `${basename(dir)} #${target.slot + 1}`);
-    return ctx.reply(`📁 Working dir for this session: ${dir}`, { reply_markup: buildKeyboard(chatId) });
+    return ctx.reply(`📁 Working dir for this session: ${dir}`, { reply_markup: { remove_keyboard: true } });
   });
 
   bot.command('status', (ctx) => ctx.reply(statusText(activeTarget(ctx.chat!.id))));
@@ -620,6 +641,32 @@ export function createBot(): Bot {
       await ctx.answerCallbackQuery('Reopened');
       await attachSession(ctx.api, chatId, slot);
       return;
+    }
+
+    // /sessions switcher: tap a thread (or New / Concierge / Closed).
+    if (data.startsWith('sw:')) {
+      const sel = data.slice('sw:'.length);
+      await ctx.answerCallbackQuery();
+      if (sel === 'new') {
+        await ctx.editMessageText('➕ New thread').catch(() => {});
+        return void createAndAttach(ctx);
+      }
+      if (sel === 'control') {
+        await ctx.editMessageText('🎛️ Concierge').catch(() => {});
+        return void switchTo(ctx, CONTROL_SLOT);
+      }
+      if (sel === 'closed') {
+        const closed = listSessions(chatId, 'closed');
+        await ctx
+          .editMessageText('🗂 Closed threads — tap to reopen:', {
+            reply_markup: sessionListKeyboard(chatId, closed, 'reopen'),
+          })
+          .catch(() => {});
+        return;
+      }
+      const slot = Number(sel);
+      await ctx.editMessageText(`📍 ${escapeHtml(titleOf(chatId, slot))}`, { parse_mode: 'HTML' }).catch(() => {});
+      return void switchTo(ctx, slot);
     }
 
     // Thread picker (routing) — user chose where a held message should go.
@@ -722,19 +769,6 @@ export function createBot(): Bot {
     const chatId = ctx.chat.id;
     ensureChat(chatId);
     const text = ctx.message.text;
-
-    // A tap on the bottom reply keyboard arrives as a normal text message.
-    const btn = matchButton(chatId, text);
-    if (btn === 'new') return void createAndAttach(ctx);
-    if (btn === 'control') return void switchTo(ctx, CONTROL_SLOT);
-    if (btn === 'history') {
-      const closed = listSessions(chatId, 'closed');
-      if (closed.length === 0) return void ctx.reply('No closed sessions.');
-      return void ctx.reply('🗂 Closed sessions — tap to reopen:', {
-        reply_markup: sessionListKeyboard(chatId, closed, 'reopen'),
-      });
-    }
-    if (typeof btn === 'number') return void switchTo(ctx, btn);
 
     // Coalesce back-to-back messages (e.g. a long paste Telegram split) into one
     // turn instead of starting on the first and queueing the rest.
