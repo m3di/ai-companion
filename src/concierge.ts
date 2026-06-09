@@ -9,6 +9,7 @@ import {
   getSession,
   getSharedMemory,
   listSessions,
+  markTitleExplicit,
   recentMessages,
   sessionKey,
   setAutoRoute,
@@ -258,7 +259,10 @@ export function buildConciergeServer(view: RunningView) {
         return { content: [{ type: 'text' as const, text: `No thread at slot ${args.slot}.` }], isError: true };
       }
       if (args.summary) setMemo(chatId, args.slot, args.title.slice(0, 60), args.summary);
-      else setSessionTitle(chatId, args.slot, args.title.slice(0, 60));
+      else {
+        setSessionTitle(chatId, args.slot, args.title.slice(0, 60));
+        markTitleExplicit(chatId, args.slot);
+      }
       return { content: [{ type: 'text' as const, text: `Updated slot ${args.slot} → "${args.title}".` }] };
     },
   );

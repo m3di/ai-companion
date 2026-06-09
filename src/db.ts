@@ -103,6 +103,13 @@ const hasMemo = db
   .get();
 if (!hasMemo) db.exec('ALTER TABLE chat_sessions ADD COLUMN memo TEXT');
 
+// auto_title=1 means the title tracks Claude Code's free session summary; an
+// explicit rename (concierge setThreadMemo) flips it to 0 so we stop overriding.
+const hasAutoTitle = db
+  .prepare("SELECT 1 FROM pragma_table_info('chat_sessions') WHERE name = 'auto_title'")
+  .get();
+if (!hasAutoTitle) db.exec('ALTER TABLE chat_sessions ADD COLUMN auto_title INTEGER NOT NULL DEFAULT 1');
+
 // Routing settings (Phase 1): auto_route toggles the classifier; pinned locks
 // routing to the active thread regardless.
 const hasAutoRoute = db
@@ -165,10 +172,18 @@ const stmts = {
     'UPDATE chat_sessions SET title = ? WHERE chat_id = ? AND slot = ?',
   ),
   setMemo: db.prepare<[string, string, number, number]>(
-    "UPDATE chat_sessions SET title = ?, memo = ?, last_active = datetime('now') WHERE chat_id = ? AND slot = ?",
+    "UPDATE chat_sessions SET title = ?, memo = ?, auto_title = 0, last_active = datetime('now') WHERE chat_id = ? AND slot = ?",
   ),
   getMemo: db.prepare<[number, number]>(
     'SELECT title, memo FROM chat_sessions WHERE chat_id = ? AND slot = ?',
+  ),
+  // Refresh the auto-title from Claude Code's session summary — only while the
+  // thread hasn't been explicitly renamed.
+  refreshAutoTitle: db.prepare<[string, number, number]>(
+    'UPDATE chat_sessions SET title = ? WHERE chat_id = ? AND slot = ? AND auto_title = 1',
+  ),
+  markTitleExplicit: db.prepare<[number, number]>(
+    'UPDATE chat_sessions SET auto_title = 0 WHERE chat_id = ? AND slot = ?',
   ),
   touchSession: db.prepare<[number, number]>(
     "UPDATE chat_sessions SET last_active = datetime('now') WHERE chat_id = ? AND slot = ?",
@@ -295,6 +310,16 @@ export function setSessionStatus(chatId: number, slot: number, status: 'active' 
 
 export function setSessionTitle(chatId: number, slot: number, title: string): void {
   stmts.setSessionTitle.run(title, chatId, slot);
+}
+
+/** Update the title from Claude Code's free session summary (auto-titles only). */
+export function refreshAutoTitle(chatId: number, slot: number, title: string): void {
+  stmts.refreshAutoTitle.run(title, chatId, slot);
+}
+
+/** Stop auto-titling this thread (it was explicitly renamed). */
+export function markTitleExplicit(chatId: number, slot: number): void {
+  stmts.markTitleExplicit.run(chatId, slot);
 }
 
 export interface Memo {

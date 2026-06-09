@@ -1,6 +1,7 @@
 import { basename, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { autoRetry } from '@grammyjs/auto-retry';
+import { getSessionInfo } from '@anthropic-ai/claude-agent-sdk';
 import { Bot, type Context, InlineKeyboard } from 'grammy';
 import { config, type PermissionMode } from './config.js';
 import { askClaude } from './claude.js';
@@ -19,6 +20,7 @@ import {
   recentCorrections,
   recentMessages,
   recentRoutes,
+  refreshAutoTitle,
   sessionKey,
   setAutoRoute,
   setCwd,
@@ -294,6 +296,29 @@ async function runTurn(ctx: Context, target: Target, text: string, userMsgId?: n
       // concierge to decide whether and how to report it.
       void notifyCompletion(ctx, target, ok);
     }
+    // Keep the thread title fresh from Claude Code's free session summary.
+    if (!isControl) void refreshThreadTitle(target.chatId, target.slot);
+  }
+}
+
+/**
+ * Pull Claude Code's free per-session summary (getSessionInfo reads the local
+ * session file — no LLM call) and use it as the thread's title, unless the
+ * thread was explicitly renamed. Keeps /sessions labels + routing current for
+ * free. Best-effort.
+ */
+async function refreshThreadTitle(chatId: number, slot: number): Promise<void> {
+  if (slot === CONTROL_SLOT) return;
+  const key = sessionKey(chatId, slot);
+  const sessionId = getSessionId(key);
+  if (!sessionId) return;
+  const cwd = getPrefs(key).cwd ?? config.workingDir;
+  try {
+    const info = await getSessionInfo(sessionId, { dir: cwd });
+    const summary = info?.summary?.trim();
+    if (summary && summary.length > 3) refreshAutoTitle(chatId, slot, summary.slice(0, 60));
+  } catch {
+    /* session file not found / no summary — ignore */
   }
 }
 
