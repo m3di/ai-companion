@@ -5,6 +5,7 @@ import { getSessionInfo } from '@anthropic-ai/claude-agent-sdk';
 import { Bot, type Context, InlineKeyboard } from 'grammy';
 import { config, type PermissionMode } from './config.js';
 import { askClaude } from './claude.js';
+import { runDream } from './dream.js';
 import {
   type ChatSession,
   createSession,
@@ -665,6 +666,12 @@ export function createBot(): Bot {
   });
 
   bot.command('status', (ctx) => ctx.reply(statusText(activeTarget(ctx.chat!.id))));
+
+  bot.command('dream', async (ctx) => {
+    const chatId = ctx.chat!.id;
+    await ctx.reply('🌙 Dreaming — reviewing recent activity and the code. This takes a couple of minutes…');
+    void runDream(ctx.api, chatId);
+  });
 
   bot.on('callback_query:data', async (ctx) => {
     const data = ctx.callbackQuery.data;
