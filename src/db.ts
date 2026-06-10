@@ -178,9 +178,11 @@ const stmts = {
     'SELECT title, memo FROM chat_sessions WHERE chat_id = ? AND slot = ?',
   ),
   // Refresh the auto-title from Claude Code's session summary — only while the
-  // thread hasn't been explicitly renamed.
+  // thread hasn't been explicitly renamed AND has no concierge memo. A memo
+  // means the concierge curated it; its title beats the generic auto-summary
+  // (and the router keys on titles, so generic ones degrade routing).
   refreshAutoTitle: db.prepare<[string, number, number]>(
-    'UPDATE chat_sessions SET title = ? WHERE chat_id = ? AND slot = ? AND auto_title = 1',
+    "UPDATE chat_sessions SET title = ? WHERE chat_id = ? AND slot = ? AND auto_title = 1 AND (memo IS NULL OR memo = '')",
   ),
   markTitleExplicit: db.prepare<[number, number]>(
     'UPDATE chat_sessions SET auto_title = 0 WHERE chat_id = ? AND slot = ?',
