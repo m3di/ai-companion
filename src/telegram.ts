@@ -5,6 +5,7 @@ import { getSessionInfo } from '@anthropic-ai/claude-agent-sdk';
 import { Bot, type Context, InlineKeyboard } from 'grammy';
 import { config, type PermissionMode } from './config.js';
 import { askClaude } from './claude.js';
+import { digestFile } from './digest.js';
 import { runDream } from './dream.js';
 import {
   type ChatSession,
@@ -671,6 +672,17 @@ export function createBot(): Bot {
     const chatId = ctx.chat!.id;
     await ctx.reply('🌙 Dreaming — reviewing recent activity and the code. This takes a couple of minutes…');
     void runDream(ctx.api, chatId);
+  });
+
+  bot.command('digest', async (ctx) => {
+    const chatId = ctx.chat!.id;
+    const path = ctx.match.trim();
+    if (!path) return ctx.reply('Usage: /digest <absolute path> — digests a file into the knowledge base.');
+    await ctx.reply(`📥 Digesting ${path} into notes…`);
+    const res = await digestFile(chatId, expandPath(path));
+    return ctx.reply(
+      res.error ? `⚠️ ${res.error}` : `✅ Digested into ${res.keys.length} notes:\n${res.keys.join('\n')}`,
+    );
   });
 
   bot.on('callback_query:data', async (ctx) => {

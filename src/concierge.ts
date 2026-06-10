@@ -4,10 +4,13 @@ import { z } from 'zod';
 import { config } from './config.js';
 import {
   createSession,
+  deleteNote,
   getChatSettings,
   getMemo,
+  getNote,
   getSession,
   getSharedMemory,
+  listNotes,
   listSessions,
   markTitleExplicit,
   recentMessages,
@@ -19,7 +22,9 @@ import {
   setSessionStatus,
   setSessionTitle,
   setSharedMemory,
+  upsertNote,
 } from './db.js';
+import { digestFile } from './digest.js';
 import { escapeHtml } from './format.js';
 import { clearPendingApprovals } from './permissions.js';
 import type { RunningView } from './sessions.js';
@@ -48,6 +53,10 @@ export const CONCIERGE_TOOLS = [
   'mcp__bot__getSharedMemory',
   'mcp__bot__setSharedMemory',
   'mcp__bot__setRouting',
+  'mcp__bot__digestSource',
+  'mcp__bot__readNote',
+  'mcp__bot__writeNote',
+  'mcp__bot__deleteNote',
   'mcp__telegram__send',
   'mcp__telegram__ask',
   'mcp__telegram__askUserQuestion',
@@ -98,6 +107,10 @@ export function conciergeSystemPrompt(chatId: number): string {
   const closed = listSessions(chatId, 'closed');
   const settings = getChatSettings(chatId);
   const shared = getSharedMemory(chatId).trim();
+  const notes = listNotes(chatId);
+  const notesIndex = notes.length
+    ? notes.map((n) => `- ${n.key}: ${n.summary}`).join('\n')
+    : '(empty — digest a source or write notes to build it)';
 
   const threadLines = threads.length
     ? threads
@@ -136,6 +149,8 @@ The thread list below is your LIVE picture: each thread shows its memo and its l
 
 Shared memory holds facts true across every thread (the user's preferences, defaults, ongoing context). When the user tells you something worth remembering, fold it into the shared memory via setSharedMemory (read it first, merge, write the whole thing back — keep it tidy and deduplicated).
 
+You also have a KNOWLEDGE BASE of notes — compact, linked units the index below lets you skim, reading full content with readNote(key) only when needed. To onboard a document into it, use digestSource(path). Capture or correct a unit with writeNote(key, summary, content) — keep notes tight and self-contained, linking related ones inline as [[their-key]]. Prune obsolete ones with deleteNote. Shared memory = small always-on facts; notes = the deeper, browsable map.
+
 Current state
 - Working dir: ${config.workingDir}
 - Auto-routing: ${settings.autoRoute ? 'on' : 'off'}${settings.pinned ? ' · pinned to active thread' : ''}
@@ -143,7 +158,9 @@ Current state
 Active threads:
 ${threadLines}
 Shared memory:
-${shared || '(empty)'}`;
+${shared || '(empty)'}
+Knowledge notes (index — read full content with readNote(key)):
+${notesIndex}`;
 }
 
 /** Build the bot-management MCP server bound to the concierge's live view. */
@@ -350,10 +367,55 @@ export function buildConciergeServer(view: RunningView) {
     },
   );
 
+  const digestSource = tool(
+    'digestSource',
+    'Read a file and digest it into the knowledge base as compact note units (merging with existing notes). Use to onboard a document (e.g. a knowledge map) into memory so it can be skimmed efficiently later.',
+    { path: z.string().describe('Absolute path to the file to digest'), instructions: z.string().optional().describe('Optional: how to focus the digest') },
+    async (args) => {
+      const res = await digestFile(chatId, args.path, args.instructions);
+      if (res.error) return { content: [{ type: 'text' as const, text: `Digest failed: ${res.error}` }], isError: true };
+      return { content: [{ type: 'text' as const, text: `Digested into ${res.keys.length} notes: ${res.keys.join(', ')}` }] };
+    },
+  );
+
+  const readNote = tool(
+    'readNote',
+    'Read the full content of a knowledge note by key (the index of keys + summaries is in your context).',
+    { key: z.string() },
+    async (args) => {
+      const n = getNote(chatId, args.key);
+      return { content: [{ type: 'text' as const, text: n ? n.content : `No note "${args.key}".` }] };
+    },
+  );
+
+  const writeNote = tool(
+    'writeNote',
+    'Create or update a knowledge note (compact, self-contained; reference related notes inline as [[their-key]]). Use to capture or correct a unit of knowledge.',
+    { key: z.string().describe('Short kebab-case slug'), summary: z.string().describe('<=12 word index line'), content: z.string() },
+    async (args) => {
+      upsertNote(chatId, args.key.slice(0, 60), args.summary.slice(0, 120), args.content);
+      return { content: [{ type: 'text' as const, text: `Saved note "${args.key}".` }] };
+    },
+  );
+
+  const removeNote = tool(
+    'deleteNote',
+    'Delete a knowledge note by key (e.g. it is obsolete or merged into another).',
+    { key: z.string() },
+    async (args) => {
+      deleteNote(chatId, args.key);
+      return { content: [{ type: 'text' as const, text: `Deleted note "${args.key}".` }] };
+    },
+  );
+
   return createSdkMcpServer({
     name: 'bot',
     version: '1.0.0',
-    instructions: 'Tools to manage the bot: threads, routing, and shared memory.',
-    tools: [listThreads, readThread, dispatchTask, newThread, switchThread, setThreadMemo, setThreadMode, closeThread, getShared, setShared, setRouting],
+    instructions: 'Tools to manage the bot: threads, routing, shared memory, and the knowledge base.',
+    tools: [
+      listThreads, readThread, dispatchTask, newThread, switchThread, setThreadMemo, setThreadMode, closeThread,
+      getShared, setShared, setRouting,
+      digestSource, readNote, writeNote, removeNote,
+    ],
   });
 }

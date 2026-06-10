@@ -80,6 +80,18 @@ db.exec(`
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
 
+  -- Knowledge notes: a structured, linked memory base the concierge onboards
+  -- from. Each note is a compact, self-contained unit; the concierge sees the
+  -- (key, summary) index and reads full content on demand.
+  CREATE TABLE IF NOT EXISTS notes (
+    chat_id    INTEGER NOT NULL,
+    key        TEXT NOT NULL,
+    summary    TEXT NOT NULL DEFAULT '',
+    content    TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (chat_id, key)
+  );
+
   -- Routing history: every router decision, and corrections (wrong_slot set when
   -- the user overrode the route). Fed back into the router as recent-sequence
   -- context + few-shot examples so it learns in-context.
@@ -216,6 +228,15 @@ const stmts = {
   recentCorrections: db.prepare<[number, number]>(
     'SELECT message, title, wrong_title FROM route_log WHERE chat_id = ? AND wrong_slot IS NOT NULL ORDER BY id DESC LIMIT ?',
   ),
+  listNotes: db.prepare<[number]>('SELECT key, summary FROM notes WHERE chat_id = ? ORDER BY key'),
+  getNote: db.prepare<[number, string]>(
+    'SELECT key, summary, content FROM notes WHERE chat_id = ? AND key = ?',
+  ),
+  upsertNote: db.prepare<[number, string, string, string]>(`
+    INSERT INTO notes (chat_id, key, summary, content, updated_at) VALUES (?, ?, ?, ?, datetime('now'))
+    ON CONFLICT(chat_id, key) DO UPDATE SET summary = excluded.summary, content = excluded.content, updated_at = datetime('now')
+  `),
+  deleteNote: db.prepare<[number, string]>('DELETE FROM notes WHERE chat_id = ? AND key = ?'),
 };
 
 export function getSessionId(key: string): string | undefined {
@@ -412,4 +433,27 @@ export function recentCorrections(
     wrong_title: string;
   }>;
   return rows.reverse();
+}
+
+export interface Note {
+  key: string;
+  summary: string;
+  content: string;
+}
+
+/** The note index (key + one-line summary) for fast onboarding. */
+export function listNotes(chatId: number): Array<{ key: string; summary: string }> {
+  return stmts.listNotes.all(chatId) as Array<{ key: string; summary: string }>;
+}
+
+export function getNote(chatId: number, key: string): Note | undefined {
+  return stmts.getNote.get(chatId, key) as Note | undefined;
+}
+
+export function upsertNote(chatId: number, key: string, summary: string, content: string): void {
+  stmts.upsertNote.run(chatId, key, summary, content);
+}
+
+export function deleteNote(chatId: number, key: string): void {
+  stmts.deleteNote.run(chatId, key);
 }
