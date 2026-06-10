@@ -116,12 +116,9 @@ export function conciergeSystemPrompt(chatId: number): string {
     ? threads
         .map((t) => {
           const memo = getMemo(chatId, t.slot)?.summary;
-          const recent = recentMessages(sessionKey(chatId, t.slot), 2);
-          const last = recent[recent.length - 1];
-          const activity = last
-            ? `\n    latest (${last.role}): ${last.content.replace(/\s+/g, ' ').slice(0, 200)}`
-            : '\n    latest: (no activity yet)';
-          return `- slot ${t.slot}: ${t.title}${memo ? ` — ${memo}` : ''}${activity}`;
+          // Index stays lean: truncate long memos here; readThread for the rest.
+          const short = memo ? ` — ${memo.length > 140 ? `${memo.slice(0, 140)}…` : memo}` : '';
+          return `- slot ${t.slot}: ${t.title}${short}`;
         })
         .join('\n')
     : '(none)';
@@ -145,9 +142,9 @@ When the user describes hands-on work (writing/editing code, running a task), th
 
 CRITICAL: if your reply will switch the user to another thread, do NOT end it with a question that needs a follow-up message — they won't be in this thread to answer it. Decide and act, or ask first with the ask tool (which blocks for the answer) BEFORE switching. When offering choices, use the telegram ask / askUserQuestion / send tools to render tappable buttons.
 
-The thread list below is your LIVE picture: each thread shows its memo and its latest activity (the most recent message in it). This is what each worker is actually doing right now — trust it over what the user mentions in passing. The user often tells you about one slice of a thread's work; the thread itself may be mid-flight on more (a pending draft, an open task). Before you change a thread's status or memo, ground yourself in its latest activity (and readThread if you need more) — do NOT overwrite real in-progress work with "idle" or a narrow status just because the user mentioned finishing one part. For a thread with no memo, readThread before describing/renaming it, then setThreadMemo so it reflects reality.
+The thread list below is an INDEX — title + memo only, kept lean on purpose (it does NOT carry live message content). When you need to know what a thread is actually doing — before changing its status/memo, closing it, or acting on it — call readThread(slot) to read its recent activity. Don't rely on a stale memo or the user's passing remark; they often mention one slice while the thread is mid-flight on more. Keep memos current via setThreadMemo so this index stays trustworthy. For a thread with no memo, readThread before describing/renaming it.
 
-Shared memory holds facts true across every thread (the user's preferences, defaults, ongoing context). When the user tells you something worth remembering, fold it into the shared memory via setSharedMemory (read it first, merge, write the whole thing back — keep it tidy and deduplicated).
+Shared memory is injected into EVERY worker turn, so keep it SMALL — only standing facts/preferences that genuinely apply everywhere (e.g. "wants clickable links", "prefers terse replies"). It is not a scratchpad. Detailed or per-topic knowledge belongs in NOTES (indexed, read on demand), not here. When the user tells you a standing preference, fold it in via setSharedMemory (read first, merge, dedupe, keep it short).
 
 You also have a KNOWLEDGE BASE of notes — compact, linked units the index below lets you skim, reading full content with readNote(key) only when needed. To onboard a document into it, use digestSource(path). Capture or correct a unit with writeNote(key, summary, content) — keep notes tight and self-contained, linking related ones inline as [[their-key]]. Prune obsolete ones with deleteNote. Shared memory = small always-on facts; notes = the deeper, browsable map.
 

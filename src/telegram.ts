@@ -9,6 +9,7 @@ import { digestFile } from './digest.js';
 import { runDream } from './dream.js';
 import {
   type ChatSession,
+  clearSession,
   createSession,
   getChatSettings,
   getMemo,
@@ -196,11 +197,29 @@ function switcherKeyboard(chatId: number): InlineKeyboard {
   return kb;
 }
 
+// Cap the concierge's resumed history: clear its session every N turns so the
+// per-turn context stays bounded (it re-onboards from the lean system prompt).
+const conciergeTurns = new Map<number, number>();
+const CONCIERGE_RESET_AFTER = 30;
+function maybeResetConcierge(chatId: number): void {
+  const n = (conciergeTurns.get(chatId) ?? 0) + 1;
+  if (n > CONCIERGE_RESET_AFTER) {
+    clearSession(sessionKey(chatId, CONTROL_SLOT));
+    conciergeTurns.set(chatId, 0);
+  } else {
+    conciergeTurns.set(chatId, n);
+  }
+}
+
 /** Run one user turn against Claude Code, rendering progress through the view. */
 async function runTurn(ctx: Context, target: Target, text: string, userMsgId?: number): Promise<void> {
   await react(ctx, target.chatId, userMsgId, '✍');
 
   const isControl = target.slot === CONTROL_SLOT;
+  // The concierge is an all-day session: its whole history re-sends every turn.
+  // Periodically clear it so context (and cost) doesn't grow unbounded — it
+  // re-onboards from the lean system prompt (threads + memos + notes index).
+  if (isControl) maybeResetConcierge(target.chatId);
   // A concierge turn running while the user is elsewhere (a completion notice):
   // force its reply to post so the notification isn't swallowed.
   const forceVisible = isControl && activeSlot(target.chatId) !== CONTROL_SLOT;
@@ -667,6 +686,13 @@ export function createBot(): Bot {
   });
 
   bot.command('status', (ctx) => ctx.reply(statusText(activeTarget(ctx.chat!.id))));
+
+  bot.command('reset', (ctx) => {
+    const chatId = ctx.chat!.id;
+    clearSession(sessionKey(chatId, CONTROL_SLOT));
+    conciergeTurns.set(chatId, 0);
+    return ctx.reply('🧹 Cleared the concierge’s context. It’ll re-onboard from memos + notes on your next message.');
+  });
 
   bot.command('dream', async (ctx) => {
     const chatId = ctx.chat!.id;
