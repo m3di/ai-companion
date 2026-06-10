@@ -14,12 +14,14 @@ import {
   sessionKey,
   setAutoRoute,
   setMemo,
+  setMode,
   setPinned,
   setSessionStatus,
   setSessionTitle,
   setSharedMemory,
 } from './db.js';
 import { escapeHtml } from './format.js';
+import { clearPendingApprovals } from './permissions.js';
 import type { RunningView } from './sessions.js';
 
 /**
@@ -41,6 +43,7 @@ export const CONCIERGE_TOOLS = [
   'mcp__bot__newThread',
   'mcp__bot__switchThread',
   'mcp__bot__setThreadMemo',
+  'mcp__bot__setThreadMode',
   'mcp__bot__closeThread',
   'mcp__bot__getSharedMemory',
   'mcp__bot__setSharedMemory',
@@ -118,6 +121,8 @@ For each message, choose ONE of three moves:
 3. CONNECT THROUGH (switchThread / newThread with a task) — switch the user into a worker so they converse with it directly. Use for interactive, iterative work they'll want to watch.
 
 Default: for substantial work the user will want to follow, CONNECT THROUGH; for quick or background tasks, DISPATCH. When unsure, ask with the ask tool. Before handing a worker new context, consider reading its current state (readThread) — if the new task doesn't fit or would derail it, prefer a fresh worker.
+
+Permission modes: a DISPATCHED worker is set to "auto" automatically — it runs tools without stopping for approval, since the user isn't watching it. If a worker is stuck asking permission for every command (the user will say things like "it's not in auto mode" / "put it in auto"), use setThreadMode(slot, "auto") — it takes effect immediately, even mid-run, and unsticks it. Use "default" only when the user wants to approve each step.
 
 Be concise and action-oriented. Use a tool rather than just describing what you'd do — and don't ask permission for non-destructive actions like setting a memo or renaming; just do them (only closing a thread confirms, automatically).
 
@@ -205,10 +210,29 @@ export function buildConciergeServer(view: RunningView) {
       } else {
         return { content: [{ type: 'text' as const, text: 'Give a slot (existing worker) or a title (new worker).' }], isError: true };
       }
+      // Dispatched = unattended, so it must run autonomously or it would stall
+      // on permission prompts the user isn't here to answer.
+      setMode(sessionKey(chatId, slot), 'auto');
       const list = pendingDispatch.get(chatId) ?? [];
       list.push({ slot, text: args.task });
       pendingDispatch.set(chatId, list);
-      return { content: [{ type: 'text' as const, text: `Dispatched to "${label}" — running in the background. Ask me for its status anytime.` }] };
+      return { content: [{ type: 'text' as const, text: `Dispatched to "${label}" (auto mode) — running in the background. Ask me for its status anytime.` }] };
+    },
+  );
+
+  const setThreadMode = tool(
+    'setThreadMode',
+    'Set a worker thread\'s permission mode: "auto" (runs tools autonomously without asking — use for background/unattended work), "acceptEdits" (auto-accepts file edits, asks before commands), or "default" (asks before each tool). Takes effect immediately, even on a turn already running.',
+    { slot: z.number(), mode: z.enum(['auto', 'acceptEdits', 'default']) },
+    async (args) => {
+      const s = getSession(chatId, args.slot);
+      if (!s || s.status !== 'active') {
+        return { content: [{ type: 'text' as const, text: `No active worker at slot ${args.slot}.` }], isError: true };
+      }
+      setMode(sessionKey(chatId, args.slot), args.mode);
+      // If it was stuck waiting on a permission, auto is the user's answer.
+      if (args.mode === 'auto') clearPendingApprovals(sessionKey(chatId, args.slot));
+      return { content: [{ type: 'text' as const, text: `Set "${s.title}" to ${args.mode} mode.` }] };
     },
   );
 
@@ -330,6 +354,6 @@ export function buildConciergeServer(view: RunningView) {
     name: 'bot',
     version: '1.0.0',
     instructions: 'Tools to manage the bot: threads, routing, and shared memory.',
-    tools: [listThreads, readThread, dispatchTask, newThread, switchThread, setThreadMemo, closeThread, getShared, setShared, setRouting],
+    tools: [listThreads, readThread, dispatchTask, newThread, switchThread, setThreadMemo, setThreadMode, closeThread, getShared, setShared, setRouting],
   });
 }

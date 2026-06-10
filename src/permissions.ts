@@ -1,4 +1,5 @@
 import { InlineKeyboard } from 'grammy';
+import { getPrefs } from './db.js';
 import { describeTool, escapeHtml, SAFE_TOOLS } from './format.js';
 import type { RunningView } from './sessions.js';
 
@@ -10,7 +11,7 @@ type PermissionResult =
 const APPROVAL_TIMEOUT_MS = 5 * 60 * 1000;
 
 /** Pending approvals keyed by a short id carried in callback_data. */
-const pending = new Map<string, (d: Decision) => void>();
+const pending = new Map<string, { settle: (d: Decision) => void; key: string }>();
 
 /** Per-session set of tool names the user chose to always allow. */
 const autoAllow = new Map<string, Set<string>>();
@@ -38,11 +39,21 @@ export function resetAutoAllow(key: string): void {
 export function resolvePermission(data: string): boolean {
   const [kind, id] = data.split(':');
   if (!id) return false;
-  const resolve = pending.get(id);
-  if (!resolve) return false;
+  const entry = pending.get(id);
+  if (!entry) return false;
   pending.delete(id);
-  resolve(kind === 'a' ? 'allow' : kind === 'A' ? 'always' : 'deny');
+  entry.settle(kind === 'a' ? 'allow' : kind === 'A' ? 'always' : 'deny');
   return true;
+}
+
+/** Release any approvals a session is currently blocked on (e.g. switched to auto). */
+export function clearPendingApprovals(key: string): void {
+  for (const [id, entry] of pending) {
+    if (entry.key === key) {
+      pending.delete(id);
+      entry.settle('allow');
+    }
+  }
 }
 
 /**
@@ -60,6 +71,10 @@ export function createCanUseTool(view: RunningView) {
     { signal }: { signal: AbortSignal },
   ): Promise<PermissionResult> => {
     if (SAFE_TOOLS.has(toolName) || approved.has(toolName)) return { behavior: 'allow' };
+    // Read the mode live, so switching a thread to auto mid-turn stops the
+    // prompts immediately (unsticks a stalled background worker).
+    const mode = getPrefs(view.key).permissionMode;
+    if (mode === 'auto' || mode === 'bypassPermissions') return { behavior: 'allow' };
 
     const id = nextId();
     const { detail, summary } = describeTool(toolName, input);
@@ -91,7 +106,7 @@ export function createCanUseTool(view: RunningView) {
         clearTimeout(timeout);
         resolve(d);
       };
-      pending.set(id, settle);
+      pending.set(id, { settle, key: view.key });
       signal.addEventListener('abort', () => {
         pending.delete(id);
         settle('deny');
