@@ -83,6 +83,9 @@ function getMode(key: string): PermissionMode | undefined {
 const busy = new Set<string>();
 const queues = new Map<string, Array<{ ctx: Context; text: string; userMsgId?: number }>>();
 const running = new Map<string, AbortController>();
+// Abort a turn that emits no events for this long — a hung subprocess otherwise
+// holds the session lock forever and silently blocks every queued message.
+const TURN_IDLE_MS = 20 * 60 * 1000;
 
 /** Abort the running turn for a session and drop anything queued behind it. */
 function cancelSession(key: string): boolean {
@@ -241,6 +244,18 @@ async function runTurn(ctx: Context, target: Target, text: string, userMsgId?: n
   const abortController = new AbortController();
   running.set(target.key, abortController);
 
+  // Watchdog: if the turn goes silent for too long (a hung/dead subprocess), abort
+  // it so it can't hold the session's lock forever. Re-armed on every event — a
+  // working turn streams events; one blocked on permission/ask self-resolves via
+  // its own (shorter) timeout, so this only catches genuinely stuck turns.
+  let timedOut = false;
+  const arm = () =>
+    setTimeout(() => {
+      timedOut = true;
+      abortController.abort();
+    }, TURN_IDLE_MS);
+  let idle = arm();
+
   let ok = true;
   try {
     const resume = getSessionId(target.key);
@@ -256,6 +271,8 @@ async function runTurn(ctx: Context, target: Target, text: string, userMsgId?: n
       appendContext,
       abortController,
     })) {
+      clearTimeout(idle);
+      idle = arm();
       switch (ev.kind) {
         case 'session':
           setSessionId(target.key, ev.sessionId);
@@ -282,7 +299,9 @@ async function runTurn(ctx: Context, target: Target, text: string, userMsgId?: n
   } catch (err) {
     ok = false;
     if (abortController.signal.aborted) {
-      if (view.isAttached()) await ctx.reply('🛑 Cancelled.');
+      if (view.isAttached()) {
+        await ctx.reply(timedOut ? '⌛ Timed out (no activity) — freed this thread.' : '🛑 Cancelled.');
+      }
     } else {
       console.error('[claude] error', err);
       if (view.isAttached()) {
@@ -290,6 +309,7 @@ async function runTurn(ctx: Context, target: Target, text: string, userMsgId?: n
       }
     }
   } finally {
+    clearTimeout(idle);
     running.delete(target.key);
     await view.finish(ok);
     await react(ctx, target.chatId, userMsgId, abortController.signal.aborted ? '🤔' : ok ? '👍' : '😱');
