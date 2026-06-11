@@ -2,13 +2,12 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 import type { Api } from 'grammy';
 import { config } from './config.js';
 import {
+  chatTimeline,
   getMemo,
+  getSession,
   getSharedMemory,
   listSessions,
-  messageCount,
   recentCorrections,
-  recentMessages,
-  sessionKey,
 } from './db.js';
 import { chunkRaw, toTelegramMarkdown } from './format.js';
 
@@ -22,9 +21,9 @@ import { chunkRaw, toTelegramMarkdown } from './format.js';
 
 const DREAM_SYSTEM = `You are this Telegram bot, dreaming. While the user sleeps you reflect on the day to make the whole system of interaction better. You are in DRY-RUN: you only PROPOSE — you have read-only tools and must not (and cannot) change anything.
 
-Review the digest of recent activity, the bot's memory, and — where a concrete code improvement seems worth proposing — its own TypeScript source in ./src. Reflect across these lenses:
+Review the digest, the bot's memory, and — where a concrete code improvement seems worth proposing — its own TypeScript source in ./src. The digest's conversation timeline is CHRONOLOGICAL (interleaved across threads, the way the user actually experienced it, with a [thread] tag showing where each message was routed) — read it that way to see real behaviour: how the user jumps topics, where routing/handoffs were smooth vs clumsy, where the bot was inefficient or made them repeat themselves. Reflect across these lenses:
 - Memory hygiene: memos or shared-memory facts that are stale, wrong, duplicated, contradictory, or missing.
-- Interaction & routing: patterns in the routing corrections, friction the user hit, things they had to repeat or fight.
+- Interaction & routing: friction in the timeline — misroutes, repeats, clumsy handoffs, the user fighting the bot.
 - Code / UX: specific, small changes to the bot's code that would reduce that friction (name the file and the change).
 - Mornings & priorities: anything the user should be reminded of, or work that should be reprioritized.
 
@@ -34,21 +33,30 @@ Output ONLY the report content — no preamble about your process, and no title/
 
 /** A compact digest of recent activity for the dreaming agent. */
 function buildDigest(chatId: number): string {
-  const threads = listSessions(chatId, 'active');
-  const threadBlocks = threads.map((t) => {
-    const key = sessionKey(chatId, t.slot);
-    const memo = getMemo(chatId, t.slot)?.summary ?? '(none)';
-    const recent = recentMessages(key, 8)
-      .map((m) => `    ${m.role === 'user' ? 'U' : 'A'}: ${m.content.replace(/\s+/g, ' ').slice(0, 220)}`)
-      .join('\n');
-    return `### ${t.title} — ${messageCount(key)} msgs\nmemo: ${memo}\nrecent:\n${recent || '    (none)'}`;
-  });
   const shared = getSharedMemory(chatId).trim() || '(empty)';
+
+  const threads = listSessions(chatId, 'active');
+  const threadIndex =
+    threads.map((t) => `- ${t.title}${getMemo(chatId, t.slot)?.summary ? ` — ${getMemo(chatId, t.slot)!.summary}` : ''}`).join('\n') ||
+    '(none)';
+
+  const titleFor = (key: string): string => {
+    const slot = Number(key.split(':')[1]);
+    if (slot === -1) return 'Concierge';
+    return getSession(chatId, slot)?.title ?? `thread ${slot}`;
+  };
+  // Interleaved, time-ordered — how the user actually experienced it. The
+  // [thread] tag shows where the concierge routed each message.
+  const timeline = chatTimeline(chatId, 180)
+    .map((m) => `[${titleFor(m.session_key)}] ${m.role === 'user' ? 'You' : 'Bot'}: ${m.content.replace(/\s+/g, ' ').slice(0, 260)}`)
+    .join('\n');
+
   const corrections =
     recentCorrections(chatId, 12)
       .map((c) => `- "${c.message}" belonged to ${c.title}, not ${c.wrong_title}`)
       .join('\n') || '(none)';
-  return `## Active threads\n${threadBlocks.join('\n\n') || '(none)'}\n\n## Shared memory\n${shared}\n\n## Routing corrections (where auto-routing got it wrong)\n${corrections}`;
+
+  return `## Shared memory\n${shared}\n\n## Threads (for reference)\n${threadIndex}\n\n## Routing corrections (auto-routing mistakes)\n${corrections}\n\n## Conversation timeline — chronological, the way the user actually experienced it; [thread] = where each message was routed\n${timeline}`;
 }
 
 /** Run a dry-run dreaming pass and post the report to the chat. Read-only. */

@@ -161,6 +161,9 @@ const stmts = {
   recentMessages: db.prepare<[string, number]>(
     'SELECT role, content FROM messages WHERE session_key = ? ORDER BY id DESC LIMIT ?',
   ),
+  chatTimeline: db.prepare<[string, number]>(
+    "SELECT session_key, role, content FROM messages WHERE session_key LIKE ? ORDER BY id DESC LIMIT ?",
+  ),
   // chat / slot management
   listSessions: db.prepare<[number, string]>(
     'SELECT slot, title, status FROM chat_sessions WHERE chat_id = ? AND status = ? ORDER BY slot',
@@ -293,6 +296,23 @@ export function recentMessages(
   limit: number,
 ): Array<{ role: string; content: string }> {
   const rows = stmts.recentMessages.all(key, limit) as Array<{ role: string; content: string }>;
+  return rows.reverse();
+}
+
+/**
+ * Every recent message across a chat's threads, oldest-first — the interleaved
+ * timeline the user actually experienced (each row tagged with its session_key
+ * so callers can show where it was routed). For the dreamer's input.
+ */
+export function chatTimeline(
+  chatId: number,
+  limit: number,
+): Array<{ session_key: string; role: string; content: string }> {
+  const rows = stmts.chatTimeline.all(`${chatId}:%`, limit) as Array<{
+    session_key: string;
+    role: string;
+    content: string;
+  }>;
   return rows.reverse();
 }
 
