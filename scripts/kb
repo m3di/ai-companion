@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# Thin wrapper over SWI-Prolog for the BA-Core knowledge base.
+# The agents (concierge/workers) call THIS, never raw swipl — same pattern as
+# the Fibery toolkit (scripts/fibery), so an agent only needs the ontology +
+# this CLI, not Prolog knowledge.
+#
+# Usage:
+#   scripts/kb query 'depends_on(affiliate_payout, X), owns(Who, X)'
+#   scripts/kb repl          # interactive, KB loaded
+#   scripts/kb facts         # dump all stored clauses
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+KB="$ROOT/kb/ba-core.pl"
+
+case "${1:-}" in
+  query)
+    shift
+    [ $# -gt 0 ] || { echo "usage: kb query 'Goal'" >&2; exit 2; }
+    swipl -q -g main -t halt "$KB" -- "$@"
+    ;;
+  repl)
+    swipl -q "$KB"
+    ;;
+  facts)
+    swipl -q -g "listing(owns/2),listing(depends_on/2),listing(tracks/2),halt" "$KB"
+    ;;
+  *)
+    echo "usage: kb {query 'Goal' | repl | facts}" >&2
+    exit 2
+    ;;
+esac
