@@ -27,6 +27,10 @@ export const config = {
   model: process.env.CLAUDE_MODEL || undefined,
   // Fast, cheap model for the message router (Phase 1). Haiku by default.
   routerModel: process.env.ROUTER_MODEL || 'claude-haiku-4-5-20251001',
+  // Routing strategy. 'address' = pure reply-routing (reply→its session, plain→
+  // concierge) — deterministic, no classifier. 'classifier' = the legacy Haiku
+  // router, kept as a fallback we can flip back to via ROUTING=classifier.
+  routing: (process.env.ROUTING || 'address') as 'address' | 'classifier',
   systemPromptPath: resolve(process.env.SYSTEM_PROMPT_PATH || 'prompts/system.md'),
   dbPath: resolve(process.env.DB_PATH || 'data/companion.db'),
 } as const;

@@ -1,7 +1,7 @@
 import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk';
 import { InlineKeyboard } from 'grammy';
 import { z } from 'zod';
-import { setMemo } from './db.js';
+import { getNote, listNotes, recordOutbound, setMemo, upsertNote } from './db.js';
 import { escapeHtml } from './format.js';
 import type { RunningView } from './sessions.js';
 
@@ -46,6 +46,7 @@ const INSTRUCTIONS = `You reach the user through a Telegram chat. Your normal re
 - telegram · ask — pose a single quick question with tappable options and wait for the answer. Use it to branch on one decision instead of guessing (which file, which branch, proceed or not).
 - telegram · askUserQuestion — ask up to 4 decisions at once, each option carrying a one-line explanation, rendered as tappable buttons. This is how you ask structured questions here. The built-in AskUserQuestion tool does NOT work in this chat — always use this instead.
 - telegram · setMemo — keep this thread labeled and resumable. This chat runs several parallel threads shown as buttons, and an auto-router uses these memos to route messages to the right thread, so an unset memo hurts. EARLY in your first substantive reply in a thread, call setMemo with a short title and a 1-2 line status of what this thread is about; update it after meaningful progress or when the focus shifts. It's cheap and silent — don't ask permission, just keep it current.
+- telegram · recallNotes / readNote / saveFinding — a knowledge base of durable findings, shared across all threads, so hard-won answers aren't re-derived. BEFORE substantial digging (mapping a dependency chain, working out how something works), call recallNotes() to check whether a past finding already answers it, then readNote(key) to pull it. AFTER producing a durable, reusable answer — or whenever the user says to save/remember it — call saveFinding(key, summary, content) with the distilled conclusion (key files, names, gotchas; not the play-by-play).
 
 Rules:
 - For an ordinary answer, just reply normally. Do NOT also send the same text via 'send' — that double-posts. Use 'send' for the things prose can't do.
@@ -101,10 +102,11 @@ export function buildUiServer(view: RunningView) {
       }
       const prefix = view.isAttached() ? '' : `<b>${escapeHtml(view.title)}</b> · `;
       try {
-        await api.sendMessage(chatId, `${prefix}${args.html}`, {
+        const msg = await api.sendMessage(chatId, `${prefix}${args.html}`, {
           parse_mode: 'HTML',
           ...(hasButtons ? { reply_markup: keyboard } : {}),
         });
+        recordOutbound(chatId, msg.message_id, view.key);
         return { content: [{ type: 'text' as const, text: 'Message delivered.' }] };
       } catch (e) {
         const m = e instanceof Error ? e.message : String(e);
@@ -131,6 +133,7 @@ export function buildUiServer(view: RunningView) {
       `${prefix}❓ <b>${escapeHtml(question)}</b>${body}`,
       { parse_mode: 'HTML', reply_markup: keyboard },
     );
+    recordOutbound(chatId, msg.message_id, view.key);
     return new Promise<string>((resolve) => {
       const timeout = setTimeout(() => {
         askPending.delete(id);
@@ -231,10 +234,49 @@ export function buildUiServer(view: RunningView) {
     },
   );
 
+  const recallNotes = tool(
+    'recallNotes',
+    'List the shared knowledge notes (durable findings saved across threads) as an index of key + one-line summary. Call this before substantial digging to check whether a past finding already answers the question; then readNote(key) for the full content.',
+    {},
+    async () => {
+      const notes = listNotes(view.chatId);
+      const text = notes.length
+        ? notes.map((n) => `- ${n.key} — ${n.summary}`).join('\n')
+        : '(no notes yet)';
+      return { content: [{ type: 'text' as const, text }] };
+    },
+  );
+
+  const readNoteTool = tool(
+    'readNote',
+    'Read the full content of one knowledge note by its key (get keys from recallNotes).',
+    { key: z.string() },
+    async (args) => {
+      const note = getNote(view.chatId, args.key);
+      return {
+        content: [{ type: 'text' as const, text: note ? note.content : `No note "${args.key}".` }],
+      };
+    },
+  );
+
+  const saveFinding = tool(
+    'saveFinding',
+    "Persist a durable finding to the shared notes so it isn't re-derived later. Call when you've produced a substantial reusable answer (a mapped dependency chain, a how-it-works writeup) or when the user asks to save/remember something. Distill it: the conclusion plus key specifics (files, names, gotchas), self-contained — not the play-by-play. Reference related notes inline as [[their-key]].",
+    {
+      key: z.string().describe('Short kebab-case slug, e.g. "affiliate-auth-blast-radius"'),
+      summary: z.string().describe('<=12 word index line — the question this answers'),
+      content: z.string().describe('Distilled finding: conclusion + key specifics, self-contained'),
+    },
+    async (args) => {
+      upsertNote(view.chatId, args.key.slice(0, 60), args.summary.slice(0, 120), args.content);
+      return { content: [{ type: 'text' as const, text: `Saved finding "${args.key}" to notes.` }] };
+    },
+  );
+
   return createSdkMcpServer({
     name: 'telegram',
     version: '1.0.0',
     instructions: INSTRUCTIONS,
-    tools: [send, ask, askUserQuestion, setMemoTool],
+    tools: [send, ask, askUserQuestion, setMemoTool, recallNotes, readNoteTool, saveFinding],
   });
 }

@@ -24,6 +24,7 @@ import {
   recentMessages,
   recentRoutes,
   refreshAutoTitle,
+  sessionForMessage,
   sessionKey,
   setAutoRoute,
   setCwd,
@@ -444,8 +445,18 @@ async function flushInbox(key: string): Promise<void> {
   inbox.delete(key);
   if (buf.timer) clearTimeout(buf.timer);
   const text = buf.texts.join('\n');
+  const chatId = buf.ctx.chat!.id;
 
-  const target = await decideRoute(buf.ctx, buf.ctx.chat!.id, text, buf.firstMsgId);
+  // Address mode: the buffer key already IS the resolved target (reply-routing
+  // decided it on arrival). Make it the visible thread and run — no classifier.
+  if (config.routing === 'address') {
+    const slot = Number(key.split(':')[1]);
+    if (activeSlot(chatId) !== slot) await attachSession(buf.ctx.api, chatId, slot).catch(() => {});
+    await submitTo(buf.ctx, targetForSlot(chatId, slot), text, buf.firstMsgId);
+    return;
+  }
+
+  const target = await decideRoute(buf.ctx, chatId, text, buf.firstMsgId);
   if (!target) return; // a thread picker was shown; resumes via the route: callback
   await submitTo(buf.ctx, target, text, buf.firstMsgId);
 }
@@ -496,6 +507,24 @@ function noteManualSwitch(chatId: number, toSlot: number): void {
     slot: last.slot,
     title: titleOf(chatId, last.slot),
   });
+}
+
+/**
+ * Pure reply-routing: resolve which session a message addresses. A reply to a
+ * tagged bot message → that message's session; anything else (plain message,
+ * forward, or reply to an untagged/unknown message) → the concierge.
+ */
+function resolveAddress(ctx: Context, chatId: number): Target {
+  ensureChat(chatId);
+  const replyTo = ctx.message?.reply_to_message?.message_id;
+  if (replyTo !== undefined) {
+    const key = sessionForMessage(chatId, replyTo);
+    if (key) {
+      const slot = Number(key.split(':')[1]);
+      if (Number.isFinite(slot)) return targetForSlot(chatId, slot);
+    }
+  }
+  return targetForSlot(chatId, CONTROL_SLOT);
 }
 
 /**
@@ -887,9 +916,14 @@ export function createBot(): Bot {
     ensureChat(chatId);
     const text = ctx.message.text;
 
+    // Pure reply-routing: a reply addresses the replied-to message's session; a
+    // plain message (or forward, or reply to an untagged message) goes to the
+    // concierge. The classifier path is the legacy fallback (ROUTING=classifier).
+    const target =
+      config.routing === 'address' ? resolveAddress(ctx, chatId) : activeTarget(chatId);
     // Coalesce back-to-back messages (e.g. a long paste Telegram split) into one
     // turn instead of starting on the first and queueing the rest.
-    bufferMessage(ctx, activeTarget(chatId), text, ctx.message.message_id);
+    bufferMessage(ctx, target, text, ctx.message.message_id);
   });
 
   bot.catch((err) => console.error('[bot] error', err));

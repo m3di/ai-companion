@@ -7,6 +7,7 @@ import {
   getSession,
   listSessions,
   recentMessages,
+  recordOutbound,
   sessionKey,
   setActiveSlot,
   setSessionStatus,
@@ -90,13 +91,16 @@ export function statusMarker(chatId: number, slot: number): string {
   return badge === 'idle' ? '' : badgeIcon(badge);
 }
 
-async function sendAnswer(api: Api, chatId: number, text: string): Promise<void> {
+async function sendAnswer(api: Api, chatId: number, text: string, sessionKey?: string): Promise<void> {
   for (const piece of chunkRaw(text)) {
+    let msg;
     try {
-      await api.sendMessage(chatId, toTelegramMarkdown(piece), { parse_mode: 'MarkdownV2' });
+      msg = await api.sendMessage(chatId, toTelegramMarkdown(piece), { parse_mode: 'MarkdownV2' });
     } catch {
-      await api.sendMessage(chatId, piece);
+      msg = await api.sendMessage(chatId, piece);
     }
+    // Tag this message so a reply to it routes back to this session.
+    if (sessionKey) recordOutbound(chatId, msg.message_id, sessionKey);
   }
 }
 
@@ -192,7 +196,7 @@ export class RunningView {
   }
 
   async answer(text: string): Promise<void> {
-    if (this.isAttached() || this.forceVisible) await sendAnswer(this.api, this.chatId, text);
+    if (this.isAttached() || this.forceVisible) await sendAnswer(this.api, this.chatId, text, this.key);
   }
 
   /** Mark the session blocked on a user interaction (permission / ask). */

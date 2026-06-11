@@ -105,6 +105,16 @@ db.exec(`
     wrong_title TEXT,
     created_at  TEXT NOT NULL DEFAULT (datetime('now'))
   );
+
+  -- Maps a bot message_id back to the session that produced it, so a user's
+  -- reply to that message addresses its session deterministically (reply-routing).
+  CREATE TABLE IF NOT EXISTS message_routes (
+    chat_id     INTEGER NOT NULL,
+    message_id  INTEGER NOT NULL,
+    session_key TEXT NOT NULL,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (chat_id, message_id)
+  );
 `);
 
 // Each thread keeps a durable "memo": a short summary of what it's about and
@@ -240,6 +250,13 @@ const stmts = {
     ON CONFLICT(chat_id, key) DO UPDATE SET summary = excluded.summary, content = excluded.content, updated_at = datetime('now')
   `),
   deleteNote: db.prepare<[number, string]>('DELETE FROM notes WHERE chat_id = ? AND key = ?'),
+  recordOutbound: db.prepare<[number, number, string]>(`
+    INSERT INTO message_routes (chat_id, message_id, session_key) VALUES (?, ?, ?)
+    ON CONFLICT(chat_id, message_id) DO UPDATE SET session_key = excluded.session_key
+  `),
+  sessionForMessage: db.prepare<[number, number]>(
+    'SELECT session_key FROM message_routes WHERE chat_id = ? AND message_id = ?',
+  ),
 };
 
 export function getSessionId(key: string): string | undefined {
@@ -472,6 +489,17 @@ export function getNote(chatId: number, key: string): Note | undefined {
 
 export function upsertNote(chatId: number, key: string, summary: string, content: string): void {
   stmts.upsertNote.run(chatId, key, summary, content);
+}
+
+/** Tag a bot message with the session it belongs to (for reply-routing). */
+export function recordOutbound(chatId: number, messageId: number, sessionKey: string): void {
+  stmts.recordOutbound.run(chatId, messageId, sessionKey);
+}
+
+/** The session a bot message belongs to, if known (used to route a user's reply). */
+export function sessionForMessage(chatId: number, messageId: number): string | undefined {
+  const row = stmts.sessionForMessage.get(chatId, messageId) as { session_key: string } | undefined;
+  return row?.session_key;
 }
 
 export function deleteNote(chatId: number, key: string): void {
