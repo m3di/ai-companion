@@ -33,10 +33,41 @@ console.log(`[companion] @${me.username} polling (concurrent runner)`);
 // Warm the router subprocess at boot so the first real route isn't slow.
 void primeRouter();
 
-const runner = run(bot);
+let runner = run(bot);
+
+// Stall-watchdog: the long-poll can silently die (the process stays "polling"
+// but stops consuming updates, so messages pile up at Telegram). Every minute,
+// check the pending-update backlog; if it's stuck above zero across consecutive
+// checks, the poller has stalled — restart it. getWebhookInfo doesn't conflict
+// with getUpdates, so this is a safe, in-process self-heal.
+let stalls = 0;
+const watchdog = setInterval(async () => {
+  try {
+    const info = await bot.api.getWebhookInfo();
+    const pending = info.pending_update_count ?? 0;
+    if (pending > 0) {
+      stalls += 1;
+      if (stalls >= 2) {
+        console.warn(`[watchdog] poll stalled (${pending} pending) — restarting runner`);
+        try {
+          if (runner.isRunning()) await runner.stop();
+        } catch {
+          /* ignore */
+        }
+        runner = run(bot);
+        stalls = 0;
+      }
+    } else {
+      stalls = 0;
+    }
+  } catch {
+    /* getWebhookInfo failed (transient network) — ignore */
+  }
+}, 60_000);
 
 const shutdown = () => {
   console.log('\n[companion] stopping…');
+  clearInterval(watchdog);
   if (runner.isRunning()) void runner.stop();
 };
 process.once('SIGINT', shutdown);
