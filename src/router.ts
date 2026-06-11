@@ -39,6 +39,7 @@ Rules:
 - Pick another thread only when the message clearly concerns that thread's topic.
 - Use "new" only when the message clearly fits none of the threads.
 - Use "control" when the message is about the BOT ITSELF rather than work — managing threads (list/close/rename/switch), bot settings, or remembering a fact/preference for later ("remember that…", "how many threads do I have?", "close the visa one", "what's my working dir?").
+- Also use "control" for cross-cutting status or overview requests about the work as a WHOLE — "what's open", "scan everything", "what needs my attention", "full report", "anything across Fibery/GitHub". These need the bot's chat-wide view, not one thread. (A status request clearly scoped to one thread's topic still goes to that thread.)
 - Use "high" only when you are confident; otherwise "low".`;
 
 // Reset the warm session after this many classifications to bound context.
