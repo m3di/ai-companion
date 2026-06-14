@@ -10,6 +10,8 @@ await bot.api
   .setMyCommands([
     { command: 'sessions', description: 'List your threads, tap to switch' },
     { command: 'new', description: 'Start another thread' },
+    { command: 'capture', description: 'Toggle capture mode (queue notes for /process)' },
+    { command: 'process', description: 'Triage & fan out everything you captured' },
     { command: 'bot', description: 'Manage threads & memory (the concierge)' },
     { command: 'pin', description: 'Keep messages in the current thread (toggle)' },
     { command: 'auto', description: 'Turn auto-routing on/off' },

@@ -22,11 +22,17 @@ import {
   messageCount,
   recentCorrections,
   recentMessages,
+  addPending,
+  clearPending,
+  countPending,
+  isCapturing,
+  listPending,
   listRepos,
   recentRoutes,
   refreshAutoTitle,
   sessionForMessage,
   sessionKey,
+  setCapturing,
   setAutoRoute,
   setCwd,
   setMode,
@@ -756,6 +762,71 @@ export function createBot(): Bot {
     return ctx.reply('🧹 Cleared the concierge’s context. It’ll re-onboard from memos + notes on your next message.');
   });
 
+  bot.command('capture', (ctx) => {
+    const chatId = ctx.chat!.id;
+    ensureChat(chatId);
+    const on = !isCapturing(chatId);
+    setCapturing(chatId, on);
+    if (on) {
+      return ctx.reply(
+        '🟢 Capturing. Drop notes, forwards, and replies all day — they queue silently (👀), no agent runs. Reply to a thread to pre-address that fragment to it. Run /process to fan everything out; /capture again to stop.',
+      );
+    }
+    return ctx.reply(
+      `⚪ Capture off. ${countPending(chatId)} item(s) waiting — /process to handle them.`,
+    );
+  });
+
+  bot.command('process', async (ctx) => {
+    const chatId = ctx.chat!.id;
+    ensureChat(chatId);
+    const items = listPending(chatId);
+    if (!items.length) {
+      return ctx.reply('Nothing captured to process. (/capture to start collecting.)');
+    }
+    setCapturing(chatId, false);
+    clearPending(chatId);
+
+    // Split: reply-pre-addressed fragments go straight to their worker; the rest
+    // go to the concierge to triage and fan out (one batch → many threads).
+    const addressed = new Map<string, string[]>();
+    const toTriage: string[] = [];
+    for (const it of items) {
+      if (it.target_key) {
+        const arr = addressed.get(it.target_key) ?? [];
+        arr.push(it.text);
+        addressed.set(it.target_key, arr);
+      } else {
+        toTriage.push(it.text);
+      }
+    }
+
+    const routed: string[] = [];
+    for (const [key, texts] of addressed) {
+      const slot = Number(key.split(':')[1]);
+      routed.push(`• ${titleOf(chatId, slot)} ← ${texts.length} item(s)`);
+      await submitTo(ctx, targetForSlot(chatId, slot), texts.join('\n\n'));
+    }
+
+    await ctx.reply(
+      `📥 Processing ${items.length} item(s).` +
+        (routed.length ? `\nRouted directly by reply:\n${routed.join('\n')}` : '') +
+        (toTriage.length ? `\nTriaging ${toTriage.length} with the concierge…` : ''),
+    );
+
+    if (toTriage.length) {
+      const list = toTriage.map((t, i) => `${i + 1}. ${t}`).join('\n');
+      const prompt =
+        `[PROCESS BATCH] I captured these ${toTriage.length} fragment(s) through the day and pressed /process. ` +
+        `Work out what each means and where it belongs.\n\n${list}\n\n` +
+        'First present a short fan-out PLAN — fragment(s) → destination (an existing thread by title / a new thread / shared memory / a note) — with a tappable confirm, and only dispatch after I confirm. ' +
+        'Then fan out: dispatchTask to each target thread (you can dispatch several in one turn), update memos, and fold standing facts into shared memory or notes. ' +
+        "Cluster related fragments. Flag anything ambiguous instead of guessing, and park whatever needs my input for when I'm back.";
+      await attachSession(ctx.api, chatId, CONTROL_SLOT);
+      await submitTo(ctx, targetForSlot(chatId, CONTROL_SLOT), prompt);
+    }
+  });
+
   bot.command('dream', async (ctx) => {
     const chatId = ctx.chat!.id;
     await ctx.reply('🌙 Dreaming — reviewing recent activity and the code. This takes a couple of minutes…');
@@ -968,6 +1039,23 @@ export function createBot(): Bot {
     const chatId = ctx.chat.id;
     ensureChat(chatId);
     const text = ctx.message.text;
+
+    // Capture mode: queue the message for /process instead of running it. A reply
+    // pre-addresses its fragment to that worker; everything else is left for the
+    // concierge to triage. Acked with a reaction — no agent turn, no cost.
+    if (isCapturing(chatId)) {
+      const replyTo = ctx.message.reply_to_message?.message_id;
+      let targetKey: string | undefined;
+      if (replyTo !== undefined) {
+        const k = sessionForMessage(chatId, replyTo);
+        if (k && Number(k.split(':')[1]) !== CONTROL_SLOT) targetKey = k;
+      }
+      addPending(chatId, ctx.message.message_id, text, targetKey);
+      await ctx.api
+        .setMessageReaction(chatId, ctx.message.message_id, [{ type: 'emoji', emoji: '👀' }])
+        .catch(() => {});
+      return;
+    }
 
     // Pure reply-routing: a reply addresses the replied-to message's session; a
     // plain message (or forward, or reply to an untagged message) goes to the

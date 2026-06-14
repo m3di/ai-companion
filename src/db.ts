@@ -126,6 +126,18 @@ db.exec(`
     conventions TEXT,
     updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
   );
+
+  -- Captured-but-not-yet-run messages. While a chat is "capturing", incoming
+  -- notes/forwards/replies queue here (acked with a reaction, no agent turn);
+  -- /process drains and fans them out. target_key set = pre-addressed by a reply.
+  CREATE TABLE IF NOT EXISTS pending_inbox (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id    INTEGER NOT NULL,
+    message_id INTEGER NOT NULL,
+    text       TEXT NOT NULL,
+    target_key TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
 `);
 
 // Each thread keeps a durable "memo": a short summary of what it's about and
@@ -151,6 +163,13 @@ const hasAutoRoute = db
 if (!hasAutoRoute) {
   db.exec('ALTER TABLE chat_state ADD COLUMN auto_route INTEGER NOT NULL DEFAULT 1');
   db.exec('ALTER TABLE chat_state ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0');
+}
+// Capture mode: while on, incoming messages queue in pending_inbox for /process.
+const hasCapturing = db
+  .prepare("SELECT 1 FROM pragma_table_info('chat_state') WHERE name = 'capturing'")
+  .get();
+if (!hasCapturing) {
+  db.exec('ALTER TABLE chat_state ADD COLUMN capturing INTEGER NOT NULL DEFAULT 0');
 }
 
 const stmts = {
@@ -275,6 +294,16 @@ const stmts = {
       branch = excluded.branch, conventions = excluded.conventions, updated_at = datetime('now')
   `),
   listRepos: db.prepare('SELECT name, path, remote, branch, conventions FROM repos ORDER BY name'),
+  addPending: db.prepare<[number, number, string, string | null]>(
+    'INSERT INTO pending_inbox (chat_id, message_id, text, target_key) VALUES (?, ?, ?, ?)',
+  ),
+  listPending: db.prepare<[number]>(
+    'SELECT message_id, text, target_key FROM pending_inbox WHERE chat_id = ? ORDER BY id',
+  ),
+  clearPending: db.prepare<[number]>('DELETE FROM pending_inbox WHERE chat_id = ?'),
+  countPending: db.prepare<[number]>('SELECT COUNT(*) AS n FROM pending_inbox WHERE chat_id = ?'),
+  isCapturing: db.prepare<[number]>('SELECT capturing FROM chat_state WHERE chat_id = ?'),
+  setCapturing: db.prepare<[number, number]>('UPDATE chat_state SET capturing = ? WHERE chat_id = ?'),
 };
 
 export function getSessionId(key: string): string | undefined {
@@ -542,6 +571,39 @@ export function upsertRepo(
 /** All registered workspace repos, alphabetical. */
 export function listRepos(): RepoInfo[] {
   return stmts.listRepos.all() as RepoInfo[];
+}
+
+export interface PendingItem {
+  message_id: number;
+  text: string;
+  target_key: string | null;
+}
+
+/** Queue a captured message. target_key set = pre-addressed by a reply. */
+export function addPending(chatId: number, messageId: number, text: string, targetKey?: string): void {
+  stmts.addPending.run(chatId, messageId, text, targetKey ?? null);
+}
+
+/** Captured messages for a chat, oldest-first. */
+export function listPending(chatId: number): PendingItem[] {
+  return stmts.listPending.all(chatId) as PendingItem[];
+}
+
+export function clearPending(chatId: number): void {
+  stmts.clearPending.run(chatId);
+}
+
+export function countPending(chatId: number): number {
+  return (stmts.countPending.get(chatId) as { n: number }).n;
+}
+
+export function isCapturing(chatId: number): boolean {
+  const row = stmts.isCapturing.get(chatId) as { capturing?: number } | undefined;
+  return (row?.capturing ?? 0) === 1;
+}
+
+export function setCapturing(chatId: number, on: boolean): void {
+  stmts.setCapturing.run(on ? 1 : 0, chatId);
 }
 
 export function deleteNote(chatId: number, key: string): void {
