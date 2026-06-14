@@ -26,8 +26,14 @@ import {
 } from './db.js';
 import { digestFile } from './digest.js';
 import { escapeHtml } from './format.js';
+import { workspaceManifest } from './workspace.js';
 import { clearPendingApprovals } from './permissions.js';
 import type { RunningView } from './sessions.js';
+
+/** Truncate to n chars with an explicit marker, so the model knows it was cut. */
+function capAt(s: string, n: number): string {
+  return s.length > n ? `${s.slice(0, n)}…[truncated ${s.length - n} chars]` : s;
+}
 
 /**
  * The concierge — a control agent for the bot itself. It runs in the reserved
@@ -107,6 +113,7 @@ export function conciergeSystemPrompt(chatId: number): string {
   const closed = listSessions(chatId, 'closed');
   const settings = getChatSettings(chatId);
   const shared = getSharedMemory(chatId).trim();
+  const repos = workspaceManifest();
   const notes = listNotes(chatId);
   const notesIndex = notes.length
     ? notes.map((n) => `- ${n.key}: ${n.summary}`).join('\n')
@@ -140,6 +147,8 @@ Always refer to threads by their TITLE, never by slot number — slot numbers ar
 
 When the user describes hands-on work (writing/editing code, running a task), that belongs in a worker thread, not here. DELEGATE it: pick the right existing thread or create one with newThread, and pass the full task (with all the context the user gave you — links, decisions, constraints) plus a memo. The worker starts on the task automatically — never tell the user to paste a summary themselves.
 
+The user's projects are cloned locally (see "Workspace repos" below). Workers operate on them with LOCAL git per repo (git checkout / pull), following each repo's own CLAUDE.md / AGENTS.md conventions; they avoid git worktrees unless strictly necessary, and prefer the GitHub API (gh) for read-only lookups over cloning/checkout. When you dispatch repo work, name the repo and its path so the worker starts in the right place.
+
 CRITICAL: if your reply will switch the user to another thread, do NOT end it with a question that needs a follow-up message — they won't be in this thread to answer it. Decide and act, or ask first with the ask tool (which blocks for the answer) BEFORE switching. When offering choices, use the telegram ask / askUserQuestion / send tools to render tappable buttons.
 
 The thread list below is an INDEX — title + memo only, kept lean on purpose (it does NOT carry live message content). When you need to know what a thread is actually doing — before changing its status/memo, closing it, or acting on it — call readThread(slot) to read its recent activity. Don't rely on a stale memo or the user's passing remark; they often mention one slice while the thread is mid-flight on more. Keep memos current via setThreadMemo so this index stays trustworthy. For a thread with no memo, readThread before describing/renaming it.
@@ -152,6 +161,8 @@ Current state
 - Working dir: ${config.workingDir}
 - Auto-routing: ${settings.autoRoute ? 'on' : 'off'}${settings.pinned ? ' · pinned to active thread' : ''}
 - Closed threads: ${closed.length}
+Workspace repos (local clones — workers use local git here):
+${repos || '(none registered — the user can run /repos scan)'}
 Active threads:
 ${threadLines}
 Shared memory:
@@ -281,8 +292,11 @@ export function buildConciergeServer(view: RunningView) {
       if (msgs.length === 0) {
         return { content: [{ type: 'text' as const, text: '(no messages logged in this thread yet)' }] };
       }
+      // The findings live at the END of a report, so don't blanket-cap: the most
+      // recent message (the report) stays generous; older context lines trim.
+      const last = msgs.length - 1;
       const text = msgs
-        .map((m) => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content.slice(0, 500)}`)
+        .map((m, i) => `${m.role === 'user' ? 'User' : 'Assistant'}: ${capAt(m.content, i === last ? 4000 : 500)}`)
         .join('\n');
       return { content: [{ type: 'text' as const, text }] };
     },

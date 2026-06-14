@@ -115,6 +115,17 @@ db.exec(`
     created_at  TEXT NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY (chat_id, message_id)
   );
+
+  -- The user's workspace: repos cloned on THIS machine, so agents know what
+  -- exists and where to operate. Machine-global (not per-chat); built by a scan.
+  CREATE TABLE IF NOT EXISTS repos (
+    name        TEXT PRIMARY KEY,
+    path        TEXT NOT NULL,
+    remote      TEXT,
+    branch      TEXT,
+    conventions TEXT,
+    updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+  );
 `);
 
 // Each thread keeps a durable "memo": a short summary of what it's about and
@@ -257,6 +268,13 @@ const stmts = {
   sessionForMessage: db.prepare<[number, number]>(
     'SELECT session_key FROM message_routes WHERE chat_id = ? AND message_id = ?',
   ),
+  upsertRepo: db.prepare<[string, string, string | null, string | null, string | null]>(`
+    INSERT INTO repos (name, path, remote, branch, conventions, updated_at)
+    VALUES (?, ?, ?, ?, ?, datetime('now'))
+    ON CONFLICT(name) DO UPDATE SET path = excluded.path, remote = excluded.remote,
+      branch = excluded.branch, conventions = excluded.conventions, updated_at = datetime('now')
+  `),
+  listRepos: db.prepare('SELECT name, path, remote, branch, conventions FROM repos ORDER BY name'),
 };
 
 export function getSessionId(key: string): string | undefined {
@@ -500,6 +518,30 @@ export function recordOutbound(chatId: number, messageId: number, sessionKey: st
 export function sessionForMessage(chatId: number, messageId: number): string | undefined {
   const row = stmts.sessionForMessage.get(chatId, messageId) as { session_key: string } | undefined;
   return row?.session_key;
+}
+
+export interface RepoInfo {
+  name: string;
+  path: string;
+  remote: string | null;
+  branch: string | null;
+  conventions: string | null;
+}
+
+/** Register (or refresh) a workspace repo. */
+export function upsertRepo(
+  name: string,
+  path: string,
+  remote?: string,
+  branch?: string,
+  conventions?: string,
+): void {
+  stmts.upsertRepo.run(name, path, remote ?? null, branch ?? null, conventions ?? null);
+}
+
+/** All registered workspace repos, alphabetical. */
+export function listRepos(): RepoInfo[] {
+  return stmts.listRepos.all() as RepoInfo[];
 }
 
 export function deleteNote(chatId: number, key: string): void {

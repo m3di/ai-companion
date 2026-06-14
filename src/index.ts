@@ -17,6 +17,7 @@ await bot.api
     { command: 'history', description: 'Reopen a closed thread' },
     { command: 'cancel', description: 'Stop the current thread’s turn' },
     { command: 'cwd', description: 'Show or set the working directory' },
+    { command: 'repos', description: 'List, add, or scan your workspace repos' },
     { command: 'status', description: 'Current session info' },
   ])
   .catch(() => {});

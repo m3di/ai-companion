@@ -22,6 +22,7 @@ import {
   messageCount,
   recentCorrections,
   recentMessages,
+  listRepos,
   recentRoutes,
   refreshAutoTitle,
   sessionForMessage,
@@ -56,6 +57,7 @@ import {
   titleOf,
 } from './sessions.js';
 import { buildUiServer, resolveAsk, takeQuickReply } from './ui.js';
+import { addRepos, scanWorkspace, workspaceContext } from './workspace.js';
 
 /** A resolved target: a chat and the session slot a turn should run against. */
 interface Target {
@@ -241,7 +243,10 @@ async function runTurn(ctx: Context, target: Target, text: string, userMsgId?: n
   const concierge = isControl
     ? { systemPrompt: conciergeSystemPrompt(target.chatId), allowedTools: CONCIERGE_TOOLS }
     : undefined;
-  const appendContext = isControl ? undefined : getSharedMemory(target.chatId).trim() || undefined;
+  const appendContext = isControl
+    ? undefined
+    : [getSharedMemory(target.chatId).trim(), workspaceContext()].filter(Boolean).join('\n\n') ||
+      undefined;
   const abortController = new AbortController();
   running.set(target.key, abortController);
 
@@ -372,8 +377,16 @@ async function refreshThreadTitle(chatId: number, slot: number): Promise<void> {
  */
 async function notifyCompletion(ctx: Context, worker: Target, ok: boolean): Promise<void> {
   const title = titleOf(worker.chatId, worker.slot);
-  const recent = recentMessages(worker.key, 8)
-    .map((m) => `${m.role === 'user' ? 'Task' : 'Worker'}: ${m.content.slice(0, 500)}`)
+  // The worker's report (its findings) is the most recent message — keep it
+  // generous; only trim the older context lines.
+  const msgs = recentMessages(worker.key, 8);
+  const lastIdx = msgs.length - 1;
+  const recent = msgs
+    .map((m, i) => {
+      const cap = i === lastIdx ? 4000 : 500;
+      const body = m.content.length > cap ? `${m.content.slice(0, cap)}…[truncated]` : m.content;
+      return `${m.role === 'user' ? 'Task' : 'Worker'}: ${body}`;
+    })
     .join('\n');
   const prompt =
     `[SYSTEM EVENT] The background worker "${title}" just ${ok ? 'finished' : 'stopped with an error'}. ` +
@@ -747,6 +760,46 @@ export function createBot(): Bot {
     const chatId = ctx.chat!.id;
     await ctx.reply('🌙 Dreaming — reviewing recent activity and the code. This takes a couple of minutes…');
     void runDream(ctx.api, chatId);
+  });
+
+  bot.command('repos', async (ctx) => {
+    const arg = ctx.match.trim();
+    const fmt = (
+      rs: Array<{ name: string; branch: string | null; conventions: string | null }>,
+    ): string =>
+      rs
+        .map(
+          (r) =>
+            `• ${r.name}${r.branch ? ` (${r.branch})` : ''}${r.conventions ? ` · ${r.conventions}` : ''}`,
+        )
+        .join('\n');
+
+    if (arg.startsWith('add')) {
+      const paths = arg
+        .slice(3)
+        .trim()
+        .split(/\s+/)
+        .filter(Boolean)
+        .map((p) => expandPath(p));
+      if (!paths.length) return ctx.reply('Usage: /repos add <path> [path…]');
+      const added = addRepos(paths);
+      if (!added.length) return ctx.reply('None of those are git repos.');
+      return ctx.reply(`✅ Registered ${added.length}:\n${fmt(added)}`);
+    }
+    if (arg === 'scan') {
+      await ctx.reply(`🔎 Scanning ${config.workspaceDir} (this grabs every git repo there)…`);
+      const found = scanWorkspace();
+      if (!found.length) return ctx.reply(`No git repos found under ${config.workspaceDir}.`);
+      return ctx.reply(`✅ Registered ${found.length} repos:\n${fmt(found)}`);
+    }
+    const repos = listRepos();
+    if (!repos.length) {
+      return ctx.reply(
+        'No repos registered. Use /repos add <path…> for your work repos, or /repos scan for everything in your workspace.',
+      );
+    }
+    const lines = repos.map((r) => `• ${r.name} → ${r.path}${r.branch ? ` (${r.branch})` : ''}`);
+    return ctx.reply(`Workspace repos (${repos.length}):\n${lines.join('\n')}`);
   });
 
   bot.command('digest', async (ctx) => {
