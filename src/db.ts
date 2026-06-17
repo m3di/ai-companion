@@ -166,6 +166,14 @@ const hasAutoTitle = db
   .get();
 if (!hasAutoTitle) db.exec('ALTER TABLE chat_sessions ADD COLUMN auto_title INTEGER NOT NULL DEFAULT 1');
 
+// Rolling recap: an auto-maintained one-liner of a worker's latest state,
+// refreshed after each of its turns (no LLM call). Unlike the curated memo it
+// can't go stale, so "what's that worker doing?" is answerable cheaply.
+const hasRecap = db
+  .prepare("SELECT 1 FROM pragma_table_info('chat_sessions') WHERE name = 'recap'")
+  .get();
+if (!hasRecap) db.exec('ALTER TABLE chat_sessions ADD COLUMN recap TEXT');
+
 // Routing settings (Phase 1): auto_route toggles the classifier; pinned locks
 // routing to the active thread regardless.
 const hasAutoRoute = db
@@ -241,7 +249,10 @@ const stmts = {
     "UPDATE chat_sessions SET title = ?, memo = ?, auto_title = 0, last_active = datetime('now') WHERE chat_id = ? AND slot = ?",
   ),
   getMemo: db.prepare<[number, number]>(
-    'SELECT title, memo FROM chat_sessions WHERE chat_id = ? AND slot = ?',
+    'SELECT title, memo, recap FROM chat_sessions WHERE chat_id = ? AND slot = ?',
+  ),
+  setRecap: db.prepare<[string, number, number]>(
+    "UPDATE chat_sessions SET recap = ?, last_active = datetime('now') WHERE chat_id = ? AND slot = ?",
   ),
   // Refresh the auto-title from Claude Code's session summary — only while the
   // thread hasn't been explicitly renamed AND has no concierge memo. A memo
@@ -449,6 +460,8 @@ export function markTitleExplicit(chatId: number, slot: number): void {
 export interface Memo {
   title: string;
   summary?: string;
+  /** Auto-maintained latest-state line (set after each worker turn). */
+  recap?: string;
 }
 
 /** Write a thread's memo (also updates its title, used on the keyboard). */
@@ -458,9 +471,16 @@ export function setMemo(chatId: number, slot: number, title: string, summary: st
 
 export function getMemo(chatId: number, slot: number): Memo | undefined {
   const row = stmts.getMemo.get(chatId, slot) as
-    | { title: string; memo: string | null }
+    | { title: string; memo: string | null; recap: string | null }
     | undefined;
-  return row ? { title: row.title, summary: row.memo ?? undefined } : undefined;
+  return row
+    ? { title: row.title, summary: row.memo ?? undefined, recap: row.recap ?? undefined }
+    : undefined;
+}
+
+/** Refresh a worker's auto recap (its latest-state one-liner). */
+export function setRecap(chatId: number, slot: number, recap: string): void {
+  stmts.setRecap.run(recap, chatId, slot);
 }
 
 export function touchSession(chatId: number, slot: number): void {

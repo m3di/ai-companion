@@ -57,7 +57,7 @@ identity, Slack, deployment (Docker/k8s/PVC), credential store + progressive acc
 
 ## Phases
 
-### Phase 0 — Substrate + seam  ·  🔄 in progress
+### Phase 0 — Substrate + seam  ·  ✅ done
 
 The unlock. Most of the value-at-risk lives here; everything downstream depends on it.
 
@@ -69,7 +69,7 @@ The unlock. Most of the value-at-risk lives here; everything downstream depends 
 - [x] **Knowledge → git-tracked files** — `src/knowledge.ts` is now the file-backed, git-tracked note store: one `<key>.md` per note (frontmatter + body with `[[links]]`) + a generated `index.md`, in `KNOWLEDGE_DIR` (default `data/knowledge`, its own git repo, auto-commit per write). `chatId` dropped → one shared brain. The 15 legacy SQLite notes migrated on first boot (idempotent); the `notes` table stays only as the migration source. `digest`, `concierge`, and `ui` read/write files now.
 - [x] **Bootstrap protocol** — `index.md` carries the KB protocol (how to read/add notes, the `[[link]]` convention); the bot's agents reach it through the existing `recallNotes`/`readNote`/`writeNote`/`digestSource` tools. _(A `CLAUDE.md` inside the knowledge repo — for when `grow` operates there directly — comes with Phase 1.)_
 - [x] **`dreams` table** — dream reflections persist to a `dreams` table (`id`, `chat_id`, `report`, `created_at`, `processed_at`) instead of post-and-forget. `runDream` saves each genuine report; `grow` (Phase 1) consumes `pendingDreams()` and stamps `markDreamProcessed()`. A `/dreams` command lists them (`/dreams <id>` for the full report).
-- [ ] **Session typing** — model `WorkSession` (owns a task/PR/branch, long-lived) vs `QuerySession` (ephemeral, read-only), plus a **rolling recap** auto-updated per turn so many askers read the recap, not the whole thread.
+- [x] **Session typing + rolling recap** — the WorkSession/QuerySession split is realized by the concierge-only model (concierge = query/control layer; workers = work layer; per-turn visibility). Each worker now also keeps an auto **recap** (a `recap` column, refreshed from its latest output after every turn, no LLM call); the concierge index and `/sessions` board surface it, so "what's X doing?" is answerable without re-reading the thread.
 
 ### Phase 1 — Close the loop, on our own data  ·  ⬜ not started
 
@@ -94,6 +94,7 @@ The crown jewel — the part nobody else has. Prove it on ourselves before expos
 
 ## Changelog
 
+- **2026-06-17** — Phase 0 **rolling worker recap** → **Phase 0 complete**. Each worker keeps an auto `recap` (new `chat_sessions.recap` column) refreshed from its latest output after every turn — no LLM call, can't go stale like a memo. The concierge thread index and `/sessions` board prefer it, so "what's that worker doing?" is answerable without re-reading. With this, the substrate phase is done: transport seam, concierge-only model, git-tracked knowledge, persisted dreams, and the WorkSession/QuerySession split + recap. Next: **Phase 1 — the flywheel** (schedule `dream` nightly + build `grow`).
 - **2026-06-17** — Phase 0 **`dreams` table**: dream reflections now persist (`db.saveDream`) to a `dreams` table with a `processed_at` flag, so they're no longer post-and-forget — `grow` will consume `pendingDreams()` and stamp `markDreamProcessed()`. Added a `/dreams` viewer (list + `/dreams <id>` full report). The dream stays read-only/dry-run; only its output is now captured. This is the last raw-material piece before the Phase 1 flywheel.
 - **2026-06-17** — Phase 0 **Knowledge → git-tracked files**: new `src/knowledge.ts` replaces the SQLite `notes` table with a file-backed, git-tracked base — one `<key>.md` per note (frontmatter + `[[links]]`) + a generated protocol-headed `index.md`, in its own git repo under `KNOWLEDGE_DIR` (default `data/knowledge`), auto-committing each write. Dropped `chatId` (one shared brain). 15 legacy notes migrated on first boot (idempotent). `digest`/`concierge`/`ui` now read & write files; SQLite stays the firehose. This is the substrate `dream`-persistence and `grow` stand on.
 - **2026-06-17** — Worker messages now carry a `🔧 <title>` marker (answers, file-op notices, the live-status card, and `send`/`ask`/permission prompts); the concierge stays unmarked as the default voice. Makes "which message is a worker's — and which to reply to" unambiguous, closing the discoverability gap in the reply-to-worker model.

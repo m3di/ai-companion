@@ -25,6 +25,7 @@ import {
   sessionForMessage,
   sessionKey,
   setCapturing,
+  setRecap,
   setSessionId,
 } from './db.js';
 import { chunkRaw, describeTool, escapeHtml, fileOpMessage } from './format.js';
@@ -166,6 +167,7 @@ async function runTurn(
   let idle = arm();
 
   let ok = true;
+  let lastText = '';
   try {
     const resume = getSessionId(key);
     for await (const ev of askClaude({
@@ -194,6 +196,7 @@ async function runTurn(
         }
         case 'text':
           logMessage(key, 'assistant', ev.text);
+          lastText = ev.text;
           await view.answer(ev.text);
           break;
         case 'result':
@@ -235,8 +238,13 @@ async function runTurn(
       // how to report it.
       void notifyCompletion(target, ok);
     }
-    // Keep the thread title fresh from Claude Code's free session summary.
-    if (!isControl) void refreshThreadTitle(chatId, slot);
+    if (!isControl) {
+      // Refresh the auto recap (latest worker state) so "what's it doing?" is
+      // answerable without re-reading the thread; and keep the title fresh from
+      // Claude Code's free session summary.
+      if (lastText.trim()) setRecap(chatId, slot, lastText.replace(/\s+/g, ' ').trim().slice(0, 200));
+      void refreshThreadTitle(chatId, slot);
+    }
   }
 }
 
@@ -454,8 +462,9 @@ async function handleCommand(e: InboundCommand): Promise<void> {
       }
       const lines = active.map((s) => {
         const mark = statusMarker(chatId, s.slot) || '•';
-        const memo = getMemo(chatId, s.slot)?.summary;
-        return `${mark} <b>${escapeHtml(s.title)}</b>${memo ? ` — ${escapeHtml(memo)}` : ''}`;
+        const m = getMemo(chatId, s.slot);
+        const status = m?.recap ?? m?.summary;
+        return `${mark} <b>${escapeHtml(s.title)}</b>${status ? ` — ${escapeHtml(status)}` : ''}`;
       });
       const tail = closed.length ? `\n<i>${closed.length} closed</i>` : '';
       await adapter.send(chatId, {

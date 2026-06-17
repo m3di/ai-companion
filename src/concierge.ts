@@ -115,9 +115,11 @@ export function conciergeSystemPrompt(chatId: number): string {
   const threadLines = threads.length
     ? threads
         .map((t) => {
-          const memo = getMemo(chatId, t.slot)?.summary;
-          // Index stays lean: truncate long memos here; readThread for the rest.
-          const short = memo ? ` — ${memo.length > 140 ? `${memo.slice(0, 140)}…` : memo}` : '';
+          const m = getMemo(chatId, t.slot);
+          // Prefer the auto recap (latest worker state) over the curated memo;
+          // truncate here — readThread for the rest.
+          const status = m?.recap ?? m?.summary;
+          const short = status ? ` — ${status.length > 140 ? `${status.slice(0, 140)}…` : status}` : '';
           return `- slot ${t.slot}: ${t.title}${short}`;
         })
         .join('\n')
@@ -150,7 +152,7 @@ The user's projects are cloned locally (see "Workspace repos" below). Workers op
 
 When offering choices, use the telegram ask / askUserQuestion / send tools to render tappable buttons. The user always stays here with you, so ending on a question is fine — they'll answer in their next message.
 
-The thread list below is an INDEX — title + memo only, kept lean on purpose (it does NOT carry live message content). When you need to know what a thread is actually doing — before changing its status/memo, closing it, or acting on it — call readThread(slot) to read its recent activity. Don't rely on a stale memo or the user's passing remark; they often mention one slice while the thread is mid-flight on more. Keep memos current via setThreadMemo so this index stays trustworthy. For a thread with no memo, readThread before describing/renaming it.
+The thread list below is an INDEX — each line is a thread's title plus its latest auto-recap (a one-line snapshot of the worker's most recent output) or, if none yet, its curated memo. The recap auto-refreshes after every worker turn, so it's current — good enough to answer "what's X doing?" without re-reading. But it's a snapshot, not full history: when you need detail — before changing its status/memo, closing it, or acting on it — call readThread(slot) to read its recent activity. Don't rely on a stale memo or the user's passing remark; they often mention one slice while the thread is mid-flight on more. Keep memos current via setThreadMemo so this index stays trustworthy. For a thread with no memo, readThread before describing/renaming it.
 
 Shared memory is injected into EVERY worker turn, so keep it SMALL — only standing facts/preferences that genuinely apply everywhere (e.g. "wants clickable links", "prefers terse replies"). It is not a scratchpad. Detailed or per-topic knowledge belongs in NOTES (indexed, read on demand), not here. When the user tells you a standing preference, fold it in via setSharedMemory (read first, merge, dedupe, keep it short).
 
