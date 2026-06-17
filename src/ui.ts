@@ -2,7 +2,7 @@ import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import { getNote, listNotes, recordOutbound, setMemo, upsertNote } from './db.js';
 import { escapeHtml } from './format.js';
-import type { RunningView } from './sessions.js';
+import { CONTROL_SLOT, type RunningView } from './sessions.js';
 import type { Buttons } from './transport/types.js';
 
 interface AskEntry {
@@ -99,7 +99,7 @@ export function buildUiServer(view: RunningView) {
         }
         buttons.push(r);
       }
-      const prefix = view.isAttached() ? '' : `<b>${escapeHtml(view.title)}</b> · `;
+      const prefix = view.slot === CONTROL_SLOT ? '' : `<b>${escapeHtml(view.title)}</b> · `;
       try {
         const ref = await view.transport.send(chatId, {
           text: `${prefix}${args.html}`,
@@ -127,7 +127,7 @@ export function buildUiServer(view: RunningView) {
       if (i % 2 === 0) buttons.push([]);
       buttons[buttons.length - 1]!.push({ text: opt.slice(0, 64), data: `ask:${id}:${i}` });
     });
-    const prefix = view.isAttached() ? '' : `<b>${escapeHtml(view.title)}</b> · `;
+    const prefix = view.slot === CONTROL_SLOT ? '' : `<b>${escapeHtml(view.title)}</b> · `;
     const ref = await view.transport.send(chatId, {
       text: `${prefix}❓ <b>${escapeHtml(question)}</b>${body}`,
       format: 'tgHtml',

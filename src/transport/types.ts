@@ -109,6 +109,8 @@ export interface ChatTransport {
 export interface ChatAdapter extends ChatTransport {
   /** Transport name for logs, e.g. 'telegram'. */
   readonly name: string;
+  /** Register the handler for normalized inbound events. Call before start(). */
+  onEvent(handler: (e: Inbound) => void | Promise<void>): void;
   /** Begin receiving and dispatching events. Resolves once running. */
   start(): Promise<void>;
   /** Stop receiving events and release resources. */

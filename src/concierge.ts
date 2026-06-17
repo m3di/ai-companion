@@ -4,7 +4,6 @@ import { config } from './config.js';
 import {
   createSession,
   deleteNote,
-  getChatSettings,
   getMemo,
   getNote,
   getSession,
@@ -14,10 +13,8 @@ import {
   markTitleExplicit,
   recentMessages,
   sessionKey,
-  setAutoRoute,
   setMemo,
   setMode,
-  setPinned,
   setSessionStatus,
   setSessionTitle,
   setSharedMemory,
@@ -57,7 +54,6 @@ export const CONCIERGE_TOOLS = [
   'mcp__bot__closeThread',
   'mcp__bot__getSharedMemory',
   'mcp__bot__setSharedMemory',
-  'mcp__bot__setRouting',
   'mcp__bot__digestSource',
   'mcp__bot__readNote',
   'mcp__bot__writeNote',
@@ -110,13 +106,10 @@ export function resolveConfirm(id: string, yes: boolean): boolean {
 export function conciergeSystemPrompt(chatId: number): string {
   const threads = listSessions(chatId, 'active');
   const closed = listSessions(chatId, 'closed');
-  const settings = getChatSettings(chatId);
   const shared = getSharedMemory(chatId).trim();
   const repos = workspaceManifest();
   const routingLine =
-    config.routing === 'address'
-      ? '- Routing: reply-based — a plain message reaches YOU (home base); the user addresses a worker by replying to one of its messages'
-      : `- Auto-routing (classifier): ${settings.autoRoute ? 'on' : 'off'}${settings.pinned ? ' · pinned to active thread' : ''}`;
+    '- Routing: reply-based — every plain message reaches YOU (home base); the user addresses a worker by replying to one of its messages';
   const notes = listNotes(chatId);
   const notesIndex = notes.length
     ? notes.map((n) => `- ${n.key}: ${n.summary}`).join('\n')
@@ -135,16 +128,16 @@ export function conciergeSystemPrompt(chatId: number): string {
 
   return `You are the concierge — the director and home base of a Telegram bot that runs several parallel Claude Code worker threads for one user. The user talks to YOU; you decide what reaches the workers. You are NOT a coding agent yourself — you only use the bot tools below. The user shouldn't have to think about which worker handles what — that's your job.
 
-How the user reaches threads (routing is reply-based, NOT a classifier): any normal message comes to YOU. To talk to a worker directly, the user REPLIES to one of that worker's messages — so when a message lands with you, it's simply because they didn't reply to a thread, not because something "routed" it here. Don't tell the user about auto-routing; that's the old model.
+How the user reaches threads: the user ALWAYS talks to you — there is no "active thread" and no switching. Every plain message comes to YOU. To address a worker directly, the user REPLIES to one of that worker's messages (a one-off direct line); their next plain message is back with you. So a message landing here just means they didn't reply to a worker.
 
 Two more things the user can do: (1) /capture — collect notes, forwards, and replies through the day; they queue silently and run nothing. (2) /process — hand you everything captured at once; you receive it as a [PROCESS BATCH] (handled below). If the user is firehosing many separate notes at you and asking you to sort them later, point them at /capture + /process.
 
-For each message, choose ONE of three moves:
+For each message, choose ONE of these moves:
 1. HANDLE IT YOURSELF — questions about the bot, thread status (use readThread / listThreads), managing threads, or updating shared memory. Just answer.
-2. DISPATCH + DETACH (dispatchTask) — hand a task to a worker that runs in the background while the user stays here with you. Use for fire-and-forget work, or when the user wants to keep talking to you rather than dive in. Give the worker the FULL task plus any context from other threads it would need. The user can ask you for its status later.
-3. CONNECT THROUGH (switchThread / newThread with a task) — switch the user into a worker so they converse with it directly. Use for interactive, iterative work they'll want to watch.
+2. DISPATCH (dispatchTask) — hand a task to a worker that runs in the BACKGROUND. Use for fire-and-forget work, or when the user doesn't need to watch. Give the worker the FULL task plus any context from other threads it would need. It reports back to you when done; the user can ask you for its status anytime.
+3. DELEGATE & SHOW (newThread / switchThread with a task) — hand a worker a task and let its work STREAM into the chat so the user can watch and continue by REPLYING to it. Use for interactive, iterative work they'll want to follow. The user is NOT moved anywhere — they stay with you, and the worker's output simply appears (tagged with its title).
 
-Default: for substantial work the user will want to follow, CONNECT THROUGH; for quick or background tasks, DISPATCH. When unsure, ask with the ask tool. Before handing a worker new context, consider reading its current state (readThread) — if the new task doesn't fit or would derail it, prefer a fresh worker.
+Default: for substantial work the user will want to follow, DELEGATE & SHOW; for quick or background tasks, DISPATCH. When unsure, ask with the ask tool. Before handing a worker new context, consider reading its current state (readThread) — if the new task doesn't fit or would derail it, prefer a fresh worker.
 
 When a message begins with [PROCESS BATCH], it is a batch of fragments the user captured through the day and wants triaged in one go. Cluster related ones, then present a short fan-out PLAN — fragment(s) → destination (an existing thread by title / a new thread / shared memory / a note) — with a tappable confirm BEFORE acting. Once confirmed, fan out: dispatchTask can be called several times in one turn to seed multiple threads at once; update memos and fold standing facts into shared memory/notes. Flag ambiguous fragments and park anything that needs the user's input rather than guessing.
 
@@ -158,7 +151,7 @@ When the user describes hands-on work (writing/editing code, running a task), th
 
 The user's projects are cloned locally (see "Workspace repos" below). Workers operate on them with LOCAL git per repo (git checkout / pull), following each repo's own CLAUDE.md / AGENTS.md conventions; they avoid git worktrees unless strictly necessary, and prefer the GitHub API (gh) for read-only lookups over cloning/checkout. When you dispatch repo work, name the repo and its path so the worker starts in the right place.
 
-CRITICAL: if your reply will switch the user to another thread, do NOT end it with a question that needs a follow-up message — they won't be in this thread to answer it. Decide and act, or ask first with the ask tool (which blocks for the answer) BEFORE switching. When offering choices, use the telegram ask / askUserQuestion / send tools to render tappable buttons.
+When offering choices, use the telegram ask / askUserQuestion / send tools to render tappable buttons. The user always stays here with you, so ending on a question is fine — they'll answer in their next message.
 
 The thread list below is an INDEX — title + memo only, kept lean on purpose (it does NOT carry live message content). When you need to know what a thread is actually doing — before changing its status/memo, closing it, or acting on it — call readThread(slot) to read its recent activity. Don't rely on a stale memo or the user's passing remark; they often mention one slice while the thread is mid-flight on more. Keep memos current via setThreadMemo so this index stays trustworthy. For a thread with no memo, readThread before describing/renaming it.
 
@@ -190,22 +183,17 @@ export function buildConciergeServer(view: RunningView) {
     {},
     async () => {
       const threads = listSessions(chatId, 'active');
-      const settings = getChatSettings(chatId);
       const body =
         threads.map((t) => `slot ${t.slot}: ${t.title} — ${getMemo(chatId, t.slot)?.summary ?? '(no memo)'}`).join('\n') ||
         '(no threads)';
-      const routing =
-        config.routing === 'address'
-          ? 'Routing: reply-based (reply to a thread to address it)'
-          : `Auto-routing: ${settings.autoRoute ? 'on' : 'off'}${settings.pinned ? ', pinned' : ''}`;
-      const text = `${routing}\n${body}`;
+      const text = `Routing: reply-based (the user replies to a worker's message to address it)\n${body}`;
       return { content: [{ type: 'text' as const, text }] };
     },
   );
 
   const newThread = tool(
     'newThread',
-    'Create a new work thread and switch to it after your reply. To delegate work, pass a memo (what it is about) and a task (the full instruction for the worker, with all context) — the worker starts on the task automatically, so the user never re-pastes anything.',
+    'Create a new work thread and DELEGATE & SHOW: hand it a task whose work streams into the chat for the user to watch. Pass a memo (what it is about) and a task (the full instruction, with all context) — the worker starts automatically, so the user never re-pastes. The user is not moved; the worker output appears tagged with its title and they continue by replying to it.',
     {
       title: z.string().describe('Short thread title'),
       memo: z.string().optional().describe('1-2 line summary of what this thread is about'),
@@ -216,7 +204,7 @@ export function buildConciergeServer(view: RunningView) {
       if (args.memo) setMemo(chatId, slot, args.title.slice(0, 60), args.memo);
       if (args.task) pendingSeed.set(chatId, { slot, text: args.task });
       pendingSwitch.set(chatId, slot);
-      const tail = args.task ? ', switching there and starting the task' : ', switching after this reply';
+      const tail = args.task ? ', starting the task — its work will stream into the chat' : ' (no task yet)';
       return { content: [{ type: 'text' as const, text: `Created "${args.title}" (slot ${slot})${tail}.` }] };
     },
   );
@@ -276,7 +264,7 @@ export function buildConciergeServer(view: RunningView) {
 
   const switchThread = tool(
     'switchThread',
-    'CONNECT THROUGH: switch the user into an existing thread after your reply so they talk to that worker directly. Optionally pass a task to hand it (with full context) so it starts without the user re-pasting. Use when the work is interactive and they will want to watch and iterate.',
+    'DELEGATE & SHOW on an EXISTING worker: hand it a task whose work streams into the chat for the user to watch (they continue by replying to it). Pass the full task with all context so it starts without the user re-pasting. The user is not moved anywhere.',
     {
       slot: z.number().describe('Thread slot number'),
       task: z.string().optional().describe('Full instruction to hand the worker, with all context'),
@@ -288,8 +276,8 @@ export function buildConciergeServer(view: RunningView) {
       }
       if (args.task) pendingSeed.set(chatId, { slot: args.slot, text: args.task });
       pendingSwitch.set(chatId, args.slot);
-      const tail = args.task ? ' and handing it the task' : '';
-      return { content: [{ type: 'text' as const, text: `Will switch to "${s.title}"${tail} after this reply.` }] };
+      const tail = args.task ? ', its work will stream into the chat' : ' (no task given — nothing to run)';
+      return { content: [{ type: 'text' as const, text: `Showing "${s.title}"${tail}.` }] };
     },
   );
 
@@ -334,7 +322,7 @@ export function buildConciergeServer(view: RunningView) {
 
   const closeThread = tool(
     'closeThread',
-    'Close (archive) a thread. Asks the user to confirm first; reopenable via /history.',
+    'Close (archive) a thread. Asks the user to confirm first.',
     { slot: z.number() },
     async (args) => {
       const s = getSession(chatId, args.slot);
@@ -385,20 +373,6 @@ export function buildConciergeServer(view: RunningView) {
     },
   );
 
-  const setRouting = tool(
-    'setRouting',
-    'Toggle auto-routing on/off, or pin/unpin messages to the active thread.',
-    { autoRoute: z.boolean().optional(), pinned: z.boolean().optional() },
-    async (args) => {
-      if (args.autoRoute !== undefined) setAutoRoute(chatId, args.autoRoute);
-      if (args.pinned !== undefined) setPinned(chatId, args.pinned);
-      const s = getChatSettings(chatId);
-      return {
-        content: [{ type: 'text' as const, text: `Auto-routing ${s.autoRoute ? 'on' : 'off'}${s.pinned ? ', pinned' : ''}.` }],
-      };
-    },
-  );
-
   const digestSource = tool(
     'digestSource',
     'Read a file and digest it into the knowledge base as compact note units (merging with existing notes). Use to onboard a document (e.g. a knowledge map) into memory so it can be skimmed efficiently later.',
@@ -446,7 +420,7 @@ export function buildConciergeServer(view: RunningView) {
     instructions: 'Tools to manage the bot: threads, routing, shared memory, and the knowledge base.',
     tools: [
       listThreads, readThread, dispatchTask, newThread, switchThread, setThreadMemo, setThreadMode, closeThread,
-      getShared, setShared, setRouting,
+      getShared, setShared,
       digestSource, readNote, writeNote, removeNote,
     ],
   });

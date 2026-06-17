@@ -1,13 +1,10 @@
-import { primeRouter } from './router.js';
-import { createBot } from './telegram.js';
+import { registerDispatch } from './dispatch.js';
+import { TelegramAdapter } from './transport/telegram.js';
 
-// createBot() wires the handlers and returns the chat adapter. The transport is
-// the only chat-surface dependency the app entry point has — swapping Telegram
-// for another ChatAdapter is a change behind createBot, nothing here.
-const adapter = createBot();
-
-// Warm the router subprocess at boot so the first real route isn't slow.
-void primeRouter();
+// The chat surface is chosen here and nowhere else. Swap TelegramAdapter for
+// another ChatAdapter (e.g. Slack) and the rest of the app is unchanged.
+const adapter = new TelegramAdapter();
+registerDispatch(adapter);
 
 await adapter.start();
 

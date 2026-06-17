@@ -1,26 +1,23 @@
-import type { Buttons, ChatTransport } from './transport/types.js';
 import {
-  countSessions,
   getActiveSlot,
-  getMemo,
   getSession,
-  listSessions,
-  recentMessages,
   recordOutbound,
   sessionKey,
   setActiveSlot,
-  setSessionStatus,
-  touchSession,
 } from './db.js';
-import { chunkRaw, escapeHtml, toTelegramMarkdown } from './format.js';
+import { chunkRaw, toTelegramMarkdown } from './format.js';
 import { LiveStatus } from './liveStatus.js';
+import type { Buttons, ChatTransport } from './transport/types.js';
 
 /**
- * Many logical Claude sessions live inside one Telegram chat. Exactly one is
- * "attached" (its live stream is shown in the chat); the rest keep running but
- * stay quiet, surfacing only through badges on the bottom reply keyboard. This
- * module owns that multiplexing: session state, the keyboard, attach/switch,
- * and the per-turn output gating that decides what actually reaches the chat.
+ * Many logical Claude sessions live inside one chat. The user always talks to
+ * the concierge (slot -1); workers (slots 0+) run in the background and surface
+ * through the concierge — except a worker turn the user triggered directly (by
+ * replying to one of its messages, or one the concierge handed off to "watch"),
+ * which streams to the chat. There is no "active/attached" thread: a turn's
+ * visibility is fixed when it starts (the `visible` flag), not by what the user
+ * is looking at. This module owns that per-turn output gating plus the worker
+ * status badges.
  */
 
 export type Badge = 'idle' | 'running' | 'needsPerm' | 'asked' | 'error';
@@ -31,13 +28,9 @@ export type Badge = 'idle' | 'running' | 'needsPerm' | 'asked' | 'error';
 export const CONTROL_SLOT = -1;
 const CONTROL_LABEL = '🎛️ Concierge';
 
-const CATCHUP_LINES = 6;
-
 // Transient per-session badge state, keyed by "<chatId>:<slot>". Rebuilt on
 // restart from whatever the next turn does — never load-bearing.
 const badges = new Map<string, Badge>();
-// Live turn views, so a switch can attach/detach a turn that is mid-flight.
-const views = new Map<string, RunningView>();
 
 function setBadge(key: string, badge: Badge): void {
   badges.set(key, badge);
@@ -62,21 +55,11 @@ function badgeIcon(badge: Badge): string {
   }
 }
 
-/**
- * Ensure a chat is initialised. New chats start at the concierge (home base);
- * the legacy ":0" work session is preserved for existing chats.
- */
+/** Ensure a chat's state row exists (so settings/capture flags can persist). */
 export function ensureChat(chatId: number): void {
-  // Home base: you always land in, and return to, the concierge.
+  // setActiveSlot is the only upsert into chat_state; the slot value itself is
+  // vestigial (there's no active thread), but it materializes the row.
   if (getActiveSlot(chatId) === undefined) setActiveSlot(chatId, CONTROL_SLOT);
-  if (countSessions(chatId, 'active') > 0) return;
-  const existing = getSession(chatId, 0);
-  if (existing && existing.status === 'closed') setSessionStatus(chatId, 0, 'active');
-}
-
-export function activeSlot(chatId: number): number {
-  ensureChat(chatId);
-  return getActiveSlot(chatId) ?? 0;
 }
 
 export function titleOf(chatId: number, slot: number): string {
@@ -109,9 +92,10 @@ async function sendAnswer(
 }
 
 /**
- * One running turn's bound output surface. Routes events to the chat only while
- * its session is attached; otherwise it just updates the badge. Held in `views`
- * so a switch can attach/detach it mid-flight.
+ * One running turn's bound output surface. When `visible`, it streams a live
+ * status message, file-op notices, and the answer to the chat; when not, it
+ * stays silent (a background worker) and only updates its badge — the concierge
+ * reports such work on completion. Visibility is fixed for the turn's lifetime.
  */
 export class RunningView {
   private status?: LiveStatus;
@@ -123,8 +107,7 @@ export class RunningView {
     readonly transport: ChatTransport,
     readonly chatId: number,
     readonly slot: number,
-    // Post the final reply even when detached (a background concierge notice).
-    private readonly forceVisible = false,
+    readonly visible: boolean,
   ) {}
 
   get key(): string {
@@ -135,14 +118,9 @@ export class RunningView {
     return titleOf(this.chatId, this.slot);
   }
 
-  isAttached(): boolean {
-    return getActiveSlot(this.chatId) === this.slot;
-  }
-
   async begin(): Promise<void> {
-    views.set(this.key, this);
     if (!this.blocked) setBadge(this.key, 'running');
-    if (this.isAttached()) await this.openLive();
+    if (this.visible) await this.openLive();
   }
 
   private startTyping(): void {
@@ -160,51 +138,37 @@ export class RunningView {
     }
   }
 
-  /** Open (or reopen) the live status message + typing for the attached view. */
+  /** Open the live status message + typing for a visible turn. */
   private async openLive(): Promise<void> {
     if (this.status) return;
     this.startTyping();
     this.status = new LiveStatus(this.transport, this.chatId);
-    await this.status.start(stopKeyboard());
+    await this.status.start(stopKeyboard(this.slot));
     this.status.push(this.lastAction, '🧠');
-  }
-
-  /** Called by a switch when this turn's session becomes the attached one. */
-  async attach(): Promise<void> {
-    if (!this.status) await this.openLive();
-  }
-
-  /** Called by a switch when the user navigates away from this running turn. */
-  async detach(): Promise<void> {
-    this.stopTyping();
-    if (this.status) {
-      await this.status.freeze('↪️ <b>Moved to background</b> — running…');
-      this.status = undefined;
-    }
   }
 
   action(summary: string, emoji: string): void {
     this.lastAction = summary;
     if (!this.blocked) setBadge(this.key, 'running');
-    if (this.isAttached()) {
+    if (this.visible) {
       void this.openLive().then(() => this.status?.push(summary, emoji));
     }
   }
 
   async fileOp(html: string): Promise<void> {
-    if (this.isAttached())
+    if (this.visible)
       await this.transport.send(this.chatId, { text: html, format: 'tgHtml' }).catch(() => {});
   }
 
   async answer(text: string): Promise<void> {
-    if (this.isAttached() || this.forceVisible) await sendAnswer(this.transport, this.chatId, text, this.key);
+    if (this.visible) await sendAnswer(this.transport, this.chatId, text, this.key);
   }
 
   /** Mark the session blocked on a user interaction (permission / ask). */
   async block(badge: 'needsPerm' | 'asked', notice: string): Promise<void> {
     this.blocked = true;
     setBadge(this.key, badge);
-    if (!this.isAttached()) await notifyBackground(this.transport, this.chatId, notice);
+    if (!this.visible) await notifyBackground(this.transport, this.chatId, notice);
   }
 
   unblock(): void {
@@ -213,17 +177,16 @@ export class RunningView {
   }
 
   async finish(ok: boolean): Promise<void> {
-    views.delete(this.key);
     this.stopTyping();
     setBadge(this.key, ok ? 'idle' : 'error');
-    // Attached: finalize the live status. Detached: stay silent here — telegram
-    // wakes the concierge to decide how to report a background completion.
-    if (this.isAttached() && this.status) await this.status.finalize(ok);
+    // Visible: finalize the live status. Background: stay silent — the dispatcher
+    // wakes the concierge to decide how to report the completion.
+    if (this.visible && this.status) await this.status.finalize(ok);
   }
 }
 
-function stopKeyboard(): Buttons {
-  return [[{ text: '🛑 Stop', data: 'stop' }]];
+function stopKeyboard(slot: number): Buttons {
+  return [[{ text: '🛑 Stop', data: `stop:${slot}` }]];
 }
 
 /** Send a one-line background notice (and clear any stale bottom keyboard). */
@@ -232,44 +195,5 @@ export async function notifyBackground(
   chatId: number,
   html: string,
 ): Promise<void> {
-  await transport
-    .send(chatId, { text: html, format: 'tgHtml', removeKeyboard: true })
-    .catch(() => {});
-}
-
-/**
- * Attach a chat to a session: mark it active, replay the last few messages, and
- * if a turn is mid-flight, hand the live view over so it streams from here on.
- */
-export async function attachSession(transport: ChatTransport, chatId: number, slot: number): Promise<void> {
-  const prev = activeSlot(chatId);
-  if (prev !== slot) await views.get(sessionKey(chatId, prev))?.detach();
-
-  setActiveSlot(chatId, slot);
-  touchSession(chatId, slot);
-
-  const title = titleOf(chatId, slot);
-  const msgs = recentMessages(sessionKey(chatId, slot), CATCHUP_LINES);
-  const transcript = msgs.length
-    ? msgs
-        .map((m) => {
-          const who = m.role === 'user' ? '🧑' : '🤖';
-          const body = m.content.length > 600 ? `${m.content.slice(0, 600)}…` : m.content;
-          return `${who} ${escapeHtml(body)}`;
-        })
-        .join('\n\n')
-    : '<i>No messages yet.</i>';
-
-  const running = views.has(sessionKey(chatId, slot));
-  const here = slot === CONTROL_SLOT ? "You're now talking to the" : "You're now in";
-  const head = `📍 ${here} <b>${escapeHtml(title)}</b>${running ? ' · 🟢 running' : ''}`;
-  const memo = getMemo(chatId, slot)?.summary;
-  const memoLine = memo ? `\n<i>${escapeHtml(memo)}</i>` : '';
-  await transport.send(chatId, {
-    text: `${head}${memoLine}\n<blockquote expandable>${transcript}</blockquote>`,
-    format: 'tgHtml',
-    removeKeyboard: true,
-  });
-
-  if (running) await views.get(sessionKey(chatId, slot))?.attach();
+  await transport.send(chatId, { text: html, format: 'tgHtml', removeKeyboard: true }).catch(() => {});
 }

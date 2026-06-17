@@ -1,11 +1,12 @@
 import { autoRetry } from '@grammyjs/auto-retry';
 import { run, type RunnerHandle } from '@grammyjs/runner';
-import { type Api, type Bot, InlineKeyboard } from 'grammy';
+import { Bot, type Context, InlineKeyboard } from 'grammy';
 import { config } from '../config.js';
 import type {
   Buttons,
   ChatAdapter,
   CommandSpec,
+  Inbound,
   MarkupFormat,
   MessageRef,
   OutgoingMessage,
@@ -14,19 +15,13 @@ import type {
 
 /** The command menu advertised to Telegram clients. */
 const COMMANDS: CommandSpec[] = [
-  { command: 'sessions', description: 'List your threads, tap to switch' },
-  { command: 'new', description: 'Start another thread' },
+  { command: 'sessions', description: 'Status board: your worker threads' },
   { command: 'capture', description: 'Toggle capture mode (queue notes for /process)' },
   { command: 'process', description: 'Triage & fan out everything you captured' },
-  { command: 'bot', description: 'Manage threads & memory (the concierge)' },
-  { command: 'pin', description: 'Keep messages in the current thread (toggle)' },
-  { command: 'auto', description: 'Turn auto-routing on/off' },
-  { command: 'close', description: 'Close the current thread' },
-  { command: 'history', description: 'Reopen a closed thread' },
-  { command: 'cancel', description: 'Stop the current thread’s turn' },
-  { command: 'cwd', description: 'Show or set the working directory' },
+  { command: 'cancel', description: 'Stop all running work in this chat' },
   { command: 'repos', description: 'List, add, or scan your workspace repos' },
-  { command: 'status', description: 'Current session info' },
+  { command: 'dream', description: 'Offline self-reflection over recent activity' },
+  { command: 'status', description: 'Concierge + worker overview' },
 ];
 
 function parseMode(format: MarkupFormat = 'tgHtml'): 'HTML' | 'MarkdownV2' | undefined {
@@ -66,22 +61,25 @@ function sendOptions(msg: OutgoingMessage): Record<string, unknown> {
 
 /**
  * Telegram implementation of ChatAdapter. Owns every grammy concern: the long-
- * poll runner, the stall-watchdog, command registration, and the outbound API.
- * The handler wiring still lives in `createBot()` (telegram.ts) and is passed in
- * here; later seam slices move those handlers behind normalized inbound events.
+ * poll runner, the stall-watchdog, command registration, the outbound API, the
+ * access-control gate, and normalizing inbound updates into Inbound events. The
+ * transport-agnostic dispatcher (dispatch.ts) consumes only those events.
  */
 export class TelegramAdapter implements ChatAdapter {
   readonly name = 'telegram';
+  private readonly bot: Bot;
   private runner?: RunnerHandle;
   private watchdog?: NodeJS.Timeout;
+  private handler?: (e: Inbound) => void | Promise<void>;
 
-  constructor(private readonly bot: Bot) {
+  constructor() {
+    this.bot = new Bot(config.telegramToken);
     this.bot.api.config.use(autoRetry());
+    this.bindHandlers();
   }
 
-  /** Transitional: raw grammy Api, for code not yet ported onto the transport. */
-  get api(): Api {
-    return this.bot.api;
+  onEvent(handler: (e: Inbound) => void | Promise<void>): void {
+    this.handler = handler;
   }
 
   async send(chatId: number, msg: OutgoingMessage): Promise<MessageRef> {
@@ -107,6 +105,63 @@ export class TelegramAdapter implements ChatAdapter {
     await this.bot.api.sendChatAction(chatId, 'typing').catch(() => {});
   }
 
+  /** Wire the access gate and translate grammy updates into Inbound events. */
+  private bindHandlers(): void {
+    // Access control: only allow-listed chats may drive the bot.
+    this.bot.use(async (ctx, next) => {
+      const chatId = ctx.chat?.id;
+      if (chatId === undefined) return;
+      if (!config.allowedChatIds.has(chatId)) {
+        console.warn(`[auth] denied chat ${chatId} (add it to ALLOWED_CHAT_IDS to allow)`);
+        if (ctx.callbackQuery) await ctx.answerCallbackQuery('Not authorized');
+        else await ctx.reply(`Not authorized. Your chat ID is ${chatId}.`);
+        return;
+      }
+      await next();
+    });
+
+    this.bot.on('message:text', (ctx) => this.emitMessage(ctx));
+    this.bot.on('callback_query:data', (ctx) => this.emitCallback(ctx));
+    this.bot.catch((err) => console.error('[bot] error', err));
+  }
+
+  private emitMessage(ctx: Context): void {
+    if (!this.handler || ctx.chat === undefined || ctx.message?.text === undefined) return;
+    const chatId = ctx.chat.id;
+    const userId = ctx.from?.id;
+    const messageId = ctx.message.message_id;
+    const text = ctx.message.text;
+
+    if (text.startsWith('/')) {
+      const head = text.slice(1).split(/\s+/, 1)[0] ?? '';
+      const command = head.split('@')[0] ?? head; // strip @botname in group chats
+      const args = text.slice(1 + head.length).trim();
+      void this.handler({ kind: 'command', chatId, userId, command, args, messageId });
+      return;
+    }
+
+    void this.handler({
+      kind: 'message',
+      chatId,
+      userId,
+      text,
+      messageId,
+      replyToMessageId: ctx.message.reply_to_message?.message_id,
+    });
+  }
+
+  private emitCallback(ctx: Context): void {
+    if (!this.handler || ctx.chat === undefined || ctx.callbackQuery?.data === undefined) return;
+    void this.handler({
+      kind: 'callback',
+      chatId: ctx.chat.id,
+      userId: ctx.from?.id,
+      data: ctx.callbackQuery.data,
+      messageId: ctx.callbackQuery.message?.message_id,
+      answer: (t?: string) => ctx.answerCallbackQuery(t ? { text: t } : undefined).then(() => {}).catch(() => {}),
+    });
+  }
+
   async start(): Promise<void> {
     const me = await this.bot.api.getMe();
     await this.bot.api.setMyCommands(COMMANDS).catch(() => {});
@@ -122,6 +177,12 @@ export class TelegramAdapter implements ChatAdapter {
 
     this.startRunner();
     this.armWatchdog();
+  }
+
+  async stop(): Promise<void> {
+    if (this.watchdog) clearInterval(this.watchdog);
+    this.watchdog = undefined;
+    if (this.runner?.isRunning()) await this.runner.stop();
   }
 
   /**
@@ -152,12 +213,6 @@ export class TelegramAdapter implements ChatAdapter {
     }
     await this.stop().catch(() => {});
     process.exit(1);
-  }
-
-  async stop(): Promise<void> {
-    if (this.watchdog) clearInterval(this.watchdog);
-    this.watchdog = undefined;
-    if (this.runner?.isRunning()) await this.runner.stop();
   }
 
   /**
