@@ -120,8 +120,38 @@ export class TelegramAdapter implements ChatAdapter {
     );
     console.log(`[companion] @${me.username} polling (concurrent runner)`);
 
-    this.runner = run(this.bot);
+    this.startRunner();
     this.armWatchdog();
+  }
+
+  /**
+   * Start the long-poll runner and handle a fatal source error gracefully. A
+   * 409 Conflict (a second instance polling the same token) or any other
+   * unrecoverable fetch error rejects the runner task; without this it surfaces
+   * as an uncaught exception with a full stack dump. We log one clear line and
+   * exit cleanly so a supervisor (or the developer) can restart a single
+   * instance.
+   */
+  private startRunner(): void {
+    this.runner = run(this.bot);
+    this.runner.task()?.catch((err) => void this.onRunnerError(err));
+  }
+
+  private async onRunnerError(err: unknown): Promise<void> {
+    const code =
+      (err as { error_code?: number })?.error_code ??
+      (err as { error?: { error_code?: number } })?.error?.error_code;
+    if (code === 409) {
+      console.error(
+        '[companion] 409 Conflict: another instance is already polling this bot token. ' +
+          'Stop the other one (e.g. `pkill -f src/index.ts`) and start a single instance. Exiting.',
+      );
+    } else {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`[companion] polling stopped with an unrecoverable error — exiting: ${msg}`);
+    }
+    await this.stop().catch(() => {});
+    process.exit(1);
   }
 
   async stop(): Promise<void> {
@@ -152,7 +182,7 @@ export class TelegramAdapter implements ChatAdapter {
             } catch {
               /* ignore */
             }
-            this.runner = run(this.bot);
+            this.startRunner();
             stalls = 0;
           }
         } else {

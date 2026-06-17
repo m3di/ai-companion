@@ -93,6 +93,7 @@ The crown jewel — the part nobody else has. Prove it on ourselves before expos
 
 ## Changelog
 
+- **2026-06-17** — `TelegramAdapter` now handles a fatal runner error (e.g. 409 Conflict from a second instance polling the same token) with one clear log line + clean exit, instead of an uncaught-exception stack dump. The stall-watchdog's restart reuses the same handled path.
 - **2026-06-17** — Phase 0 transport seam, slice 2/3: ported all outbound `Api` consumers onto `ChatTransport` (`liveStatus`, `sessions`/`RunningView`, `permissions`, `ui`, `concierge`, `dream`); replaced grammy `InlineKeyboard` with the transport's `Buttons` model. grammy is now contained to `telegram.ts` (inbound) + the adapter. Behaviour unchanged; typecheck green.
 - **2026-06-17** — Phase 0 transport seam, slice 1/3: added the `ChatAdapter` contract (`src/transport/types.ts`) and `TelegramAdapter` (`src/transport/telegram.ts`) owning the grammy runner, watchdog, command menu, and outbound API; `index.ts` now constructs the adapter and is transport-agnostic. Handler wiring still grammy-native (slices 2–3).
 - **2026-06-17** — Roadmap created. Captured the flywheel model, the three load-bearing decisions, and Phases 0–3.
