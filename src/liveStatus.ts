@@ -26,12 +26,18 @@ export class LiveStatus {
   constructor(
     private readonly transport: ChatTransport,
     private readonly chatId: number,
+    // A worker title marker; omitted for the concierge (the default voice).
+    private readonly label?: string,
   ) {}
+
+  private get labelTag(): string {
+    return this.label ? `🔧 <b>${escapeHtml(this.label)}</b> · ` : '';
+  }
 
   async start(keyboard?: Buttons): Promise<void> {
     this.keyboard = keyboard;
     this.ref = await this.transport.send(this.chatId, {
-      text: this.header,
+      text: `${this.labelTag}${this.header}`,
       format: 'tgHtml',
       buttons: keyboard,
     });
@@ -56,7 +62,7 @@ export class LiveStatus {
     const quote = count
       ? `\n<blockquote expandable>${this.log.map((l) => escapeHtml(l)).join('\n')}</blockquote>`
       : '';
-    return `${this.header}${countLine}${quote}`;
+    return `${this.labelTag}${this.header}${countLine}${quote}`;
   }
 
   private schedule(): void {
@@ -115,7 +121,7 @@ export class LiveStatus {
     const count = this.log.length;
     this.header = ok ? `✅ <b>Done</b>` : `⚠️ <b>Stopped</b>`;
     const text =
-      `${this.header}\n<i>${count} action${count === 1 ? '' : 's'}</i>` +
+      `${this.labelTag}${this.header}\n<i>${count} action${count === 1 ? '' : 's'}</i>` +
       `\n<blockquote expandable>${this.log.map((l) => escapeHtml(l)).join('\n')}</blockquote>`;
     await this.transport.edit(this.ref, { text, format: 'tgHtml', buttons: keyboard });
   }

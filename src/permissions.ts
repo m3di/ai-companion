@@ -91,7 +91,7 @@ export function createCanUseTool(view: RunningView) {
       'needsPerm',
       `❗ <b>${escapeHtml(view.title)}</b> needs permission for <b>${escapeHtml(toolName)}</b> — tap to review.`,
     );
-    const prefix = view.slot === CONTROL_SLOT ? '' : `<b>${escapeHtml(view.title)}</b> · `;
+    const prefix = view.slot === CONTROL_SLOT ? '' : `🔧 <b>${escapeHtml(view.title)}</b> · `;
     const prompt = await view.transport.send(view.chatId, {
       text:
         `${prefix}🔐 <b>${escapeHtml(toolName)}</b> wants to run:\n` +

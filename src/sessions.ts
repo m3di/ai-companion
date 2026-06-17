@@ -5,7 +5,7 @@ import {
   sessionKey,
   setActiveSlot,
 } from './db.js';
-import { chunkRaw, toTelegramMarkdown } from './format.js';
+import { chunkRaw, escapeHtml, toTelegramMarkdown } from './format.js';
 import { LiveStatus } from './liveStatus.js';
 import type { Buttons, ChatTransport } from './transport/types.js';
 
@@ -78,13 +78,17 @@ async function sendAnswer(
   chatId: number,
   text: string,
   sessionKey?: string,
+  // Worker title prefix (a 🔧 marker), so the user can see which message is a
+  // worker's — and which to reply to. Omitted for the concierge (the default voice).
+  label?: string,
 ): Promise<void> {
+  const tag = label ? `🔧 ${label}\n` : '';
   for (const piece of chunkRaw(text)) {
     let ref;
     try {
-      ref = await transport.send(chatId, { text: toTelegramMarkdown(piece), format: 'tgMarkdownV2' });
+      ref = await transport.send(chatId, { text: toTelegramMarkdown(`${tag}${piece}`), format: 'tgMarkdownV2' });
     } catch {
-      ref = await transport.send(chatId, { text: piece, format: 'plain' });
+      ref = await transport.send(chatId, { text: `${tag}${piece}`, format: 'plain' });
     }
     // Tag this message so a reply to it routes back to this session.
     if (sessionKey) recordOutbound(chatId, ref.messageId, sessionKey);
@@ -142,7 +146,7 @@ export class RunningView {
   private async openLive(): Promise<void> {
     if (this.status) return;
     this.startTyping();
-    this.status = new LiveStatus(this.transport, this.chatId);
+    this.status = new LiveStatus(this.transport, this.chatId, this.label);
     await this.status.start(stopKeyboard(this.slot));
     this.status.push(this.lastAction, '🧠');
   }
@@ -155,13 +159,19 @@ export class RunningView {
     }
   }
 
+  /** A worker title marker for messages, so the user can tell whose output it is. */
+  private get label(): string | undefined {
+    return this.slot === CONTROL_SLOT ? undefined : this.title;
+  }
+
   async fileOp(html: string): Promise<void> {
-    if (this.visible)
-      await this.transport.send(this.chatId, { text: html, format: 'tgHtml' }).catch(() => {});
+    if (!this.visible) return;
+    const tag = this.label ? `🔧 <b>${escapeHtml(this.label)}</b> · ` : '';
+    await this.transport.send(this.chatId, { text: `${tag}${html}`, format: 'tgHtml' }).catch(() => {});
   }
 
   async answer(text: string): Promise<void> {
-    if (this.visible) await sendAnswer(this.transport, this.chatId, text, this.key);
+    if (this.visible) await sendAnswer(this.transport, this.chatId, text, this.key, this.label);
   }
 
   /** Mark the session blocked on a user interaction (permission / ask). */
