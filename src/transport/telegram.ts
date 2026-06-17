@@ -21,6 +21,7 @@ const COMMANDS: CommandSpec[] = [
   { command: 'cancel', description: 'Stop all running work in this chat' },
   { command: 'repos', description: 'List, add, or scan your workspace repos' },
   { command: 'dream', description: 'Offline self-reflection over recent activity' },
+  { command: 'dreams', description: 'List saved dream reflections (/dreams <id> for one)' },
   { command: 'status', description: 'Concierge + worker overview' },
 ];
 

@@ -138,6 +138,17 @@ db.exec(`
     target_key TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
+
+  -- Persisted "dream" reflections: each offline reflection pass stores its full
+  -- report here so it isn't post-and-forget. "grow" (Phase 1) consumes the
+  -- unprocessed ones; processed_at is stamped once it has acted on a record.
+  CREATE TABLE IF NOT EXISTS dreams (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id      INTEGER NOT NULL,
+    report       TEXT NOT NULL,
+    created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+    processed_at TEXT
+  );
 `);
 
 // Each thread keeps a durable "memo": a short summary of what it's about and
@@ -300,6 +311,16 @@ const stmts = {
   countPending: db.prepare<[number]>('SELECT COUNT(*) AS n FROM pending_inbox WHERE chat_id = ?'),
   isCapturing: db.prepare<[number]>('SELECT capturing FROM chat_state WHERE chat_id = ?'),
   setCapturing: db.prepare<[number, number]>('UPDATE chat_state SET capturing = ? WHERE chat_id = ?'),
+  saveDream: db.prepare<[number, string]>('INSERT INTO dreams (chat_id, report) VALUES (?, ?)'),
+  recentDreams: db.prepare<[number, number]>(
+    'SELECT id, report, created_at, processed_at FROM dreams WHERE chat_id = ? ORDER BY id DESC LIMIT ?',
+  ),
+  pendingDreams: db.prepare<[number]>(
+    'SELECT id, report, created_at FROM dreams WHERE chat_id = ? AND processed_at IS NULL ORDER BY id',
+  ),
+  markDreamProcessed: db.prepare<[number]>(
+    "UPDATE dreams SET processed_at = datetime('now') WHERE id = ?",
+  ),
 };
 
 export function getSessionId(key: string): string | undefined {
@@ -592,4 +613,31 @@ export function isCapturing(chatId: number): boolean {
 
 export function setCapturing(chatId: number, on: boolean): void {
   stmts.setCapturing.run(on ? 1 : 0, chatId);
+}
+
+export interface DreamRecord {
+  id: number;
+  report: string;
+  created_at: string;
+  processed_at?: string | null;
+}
+
+/** Persist a dream reflection's report. Returns its id. */
+export function saveDream(chatId: number, report: string): number {
+  return Number(stmts.saveDream.run(chatId, report).lastInsertRowid);
+}
+
+/** Recent dreams for a chat, newest-first. */
+export function recentDreams(chatId: number, limit = 10): DreamRecord[] {
+  return stmts.recentDreams.all(chatId, limit) as DreamRecord[];
+}
+
+/** Dreams not yet consumed by grow, oldest-first. */
+export function pendingDreams(chatId: number): DreamRecord[] {
+  return stmts.pendingDreams.all(chatId) as DreamRecord[];
+}
+
+/** Mark a dream as acted-on (called by grow once it has consumed it). */
+export function markDreamProcessed(id: number): void {
+  stmts.markDreamProcessed.run(id);
 }

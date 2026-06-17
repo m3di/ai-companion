@@ -19,6 +19,7 @@ import {
   listRepos,
   listSessions,
   logMessage,
+  recentDreams,
   recentMessages,
   refreshAutoTitle,
   sessionForMessage,
@@ -26,7 +27,7 @@ import {
   setCapturing,
   setSessionId,
 } from './db.js';
-import { describeTool, escapeHtml, fileOpMessage } from './format.js';
+import { chunkRaw, describeTool, escapeHtml, fileOpMessage } from './format.js';
 import { createCanUseTool, resolvePermission } from './permissions.js';
 import {
   buildConciergeServer,
@@ -519,6 +520,10 @@ async function handleCommand(e: InboundCommand): Promise<void> {
       void runDream(adapter, chatId);
       return;
 
+    case 'dreams':
+      await handleDreams(chatId, args);
+      return;
+
     case 'repos':
       await handleRepos(chatId, args);
       return;
@@ -648,6 +653,39 @@ async function handleRepos(chatId: number, arg: string): Promise<void> {
   }
   const lines = repos.map((r) => `• ${r.name} → ${r.path}${r.branch ? ` (${r.branch})` : ''}`);
   await adapter.send(chatId, { text: `Workspace repos (${repos.length}):\n${lines.join('\n')}`, format: 'plain' });
+}
+
+/** List recent persisted dreams, or show one in full (/dreams <id>). */
+async function handleDreams(chatId: number, arg: string): Promise<void> {
+  const dreams = recentDreams(chatId, 20);
+  if (!dreams.length) {
+    await adapter.send(chatId, { text: 'No dreams saved yet. Run /dream to reflect.', format: 'plain' });
+    return;
+  }
+  const id = Number(arg);
+  if (arg && Number.isFinite(id)) {
+    const d = dreams.find((x) => x.id === id);
+    if (!d) {
+      await adapter.send(chatId, { text: `No dream #${id} in the recent list.`, format: 'plain' });
+      return;
+    }
+    await adapter.send(chatId, {
+      text: `🌙 Dream #${d.id} · ${d.created_at}${d.processed_at ? ' · processed' : ''}`,
+      format: 'plain',
+    });
+    for (const piece of chunkRaw(d.report)) {
+      await adapter.send(chatId, { text: piece, format: 'plain' });
+    }
+    return;
+  }
+  const lines = dreams.map((d) => {
+    const first = (d.report.split('\n').find((l) => l.trim()) ?? '').replace(/[*#_`>]/g, '').slice(0, 70);
+    return `#${d.id} · ${d.created_at.slice(0, 16)}${d.processed_at ? ' ✓' : ''} — ${first}`;
+  });
+  await adapter.send(chatId, {
+    text: `🌙 Recent dreams (/dreams <id> for the full report):\n${lines.join('\n')}`,
+    format: 'plain',
+  });
 }
 
 // --- Callbacks --------------------------------------------------------------

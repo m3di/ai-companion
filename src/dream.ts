@@ -8,6 +8,7 @@ import {
   getSharedMemory,
   listSessions,
   recentCorrections,
+  saveDream,
 } from './db.js';
 import { chunkRaw, toTelegramMarkdown } from './format.js';
 
@@ -65,6 +66,7 @@ export async function runDream(transport: ChatTransport, chatId: number): Promis
   const prompt = `Digest of recent activity:\n\n${digest}\n\nThe bot's own TypeScript source is in ./src and its SQLite database is at data/companion.db (binary — use the digest above for data; read the code for code proposals). You have read-only tools (Read/Grep/Glob). Produce your dream report now.`;
 
   let report = '';
+  let ok = true;
   try {
     for await (const m of query({
       prompt,
@@ -85,12 +87,21 @@ export async function runDream(transport: ChatTransport, chatId: number): Promis
       }
     }
   } catch (e) {
+    ok = false;
     report = `(dream failed: ${e instanceof Error ? e.message : String(e)})`;
   }
 
+  // Persist the reflection so it isn't post-and-forget — "grow" (Phase 1)
+  // consumes these records. Only store a genuine report, not a failure/empty pass.
+  let savedId: number | undefined;
+  if (ok && report.trim()) savedId = saveDream(chatId, report.trim());
+
   await transport
     .send(chatId, {
-      text: '🌙 <b>Dream report</b> — reflections on recent activity (dry-run, nothing changed):',
+      text:
+        '🌙 <b>Dream report</b> — reflections on recent activity (dry-run, nothing changed)' +
+        (savedId !== undefined ? ` · saved #${savedId}` : '') +
+        ':',
       format: 'tgHtml',
     })
     .catch(() => {});
