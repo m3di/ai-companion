@@ -149,6 +149,18 @@ db.exec(`
     created_at   TEXT NOT NULL DEFAULT (datetime('now')),
     processed_at TEXT
   );
+
+  -- "grow" change-log: each grow pass applies edits directly to the knowledge
+  -- files (no git) and records here what it did — a prose summary plus a JSON
+  -- list of per-file changes (path, action, before, after) — so the history is
+  -- visible (/grows) and reversible without a parallel git repo in the data dir.
+  CREATE TABLE IF NOT EXISTS grows (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id    INTEGER NOT NULL,
+    summary    TEXT NOT NULL,
+    changes    TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
 `);
 
 // Each thread keeps a durable "memo": a short summary of what it's about and
@@ -331,6 +343,12 @@ const stmts = {
   ),
   markDreamProcessed: db.prepare<[number]>(
     "UPDATE dreams SET processed_at = datetime('now') WHERE id = ?",
+  ),
+  saveGrow: db.prepare<[number, string, string]>(
+    'INSERT INTO grows (chat_id, summary, changes) VALUES (?, ?, ?)',
+  ),
+  recentGrows: db.prepare<[number, number]>(
+    'SELECT id, summary, changes, created_at FROM grows WHERE chat_id = ? ORDER BY id DESC LIMIT ?',
   ),
 };
 
@@ -660,4 +678,22 @@ export function pendingDreams(chatId: number): DreamRecord[] {
 /** Mark a dream as acted-on (called by grow once it has consumed it). */
 export function markDreamProcessed(id: number): void {
   stmts.markDreamProcessed.run(id);
+}
+
+export interface GrowRecord {
+  id: number;
+  summary: string;
+  /** JSON array of { path, action: 'A'|'M'|'D', before, after }. */
+  changes: string;
+  created_at: string;
+}
+
+/** Record a grow pass (its summary + per-file change-log). Returns its id. */
+export function saveGrow(chatId: number, summary: string, changes: string): number {
+  return Number(stmts.saveGrow.run(chatId, summary, changes).lastInsertRowid);
+}
+
+/** Recent grow passes for a chat, newest-first. */
+export function recentGrows(chatId: number, limit = 10): GrowRecord[] {
+  return stmts.recentGrows.all(chatId, limit) as GrowRecord[];
 }

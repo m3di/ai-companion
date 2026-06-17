@@ -1,17 +1,17 @@
-import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { config } from './config.js';
 import { allNotesForMigration } from './db.js';
 
 /**
- * The knowledge base — the companion's git-tracked long-term memory. Each note
- * is a markdown file (`<key>.md`, frontmatter + body with [[links]]); a generated
- * `index.md` carries the protocol and the index. Files are the source of truth
- * (SQLite stays the firehose), so a future "grow" pass can diff/commit the base.
+ * The knowledge base — the companion's long-term memory. Each note is a markdown
+ * file (`<key>.md`, frontmatter + body with [[links]]); a generated `index.md`
+ * carries the protocol and the index. Files are the source of truth (SQLite stays
+ * the firehose).
  *
- * The base is its own git repo, separate from the app code — grow's sandbox is
- * literally this directory, so it can never touch the bot's source.
+ * This is plain, gitignored instance data — NOT a git repo. Edits are applied
+ * directly to the files; `grow` records what it changed to the `grows` change-log
+ * (db) rather than committing, so the knowledge never grows a parallel history.
  */
 
 export interface Note {
@@ -59,24 +59,6 @@ function parse(raw: string): { summary: string; content: string } {
   return { summary: sm?.[1]?.trim() ?? '', content: body.trim() };
 }
 
-/** Best-effort git in the knowledge dir — never throws into the caller. */
-function git(...args: string[]): void {
-  try {
-    execFileSync('git', args, { cwd: DIR, stdio: 'ignore' });
-  } catch {
-    /* best-effort: git missing, nothing to commit, etc. */
-  }
-}
-
-/** Run git in the knowledge dir and return stdout (empty string on failure). */
-function gitOut(...args: string[]): string {
-  try {
-    return execFileSync('git', args, { cwd: DIR, encoding: 'utf8' }).trim();
-  } catch {
-    return '';
-  }
-}
-
 function noteFiles(): string[] {
   if (!existsSync(DIR)) return [];
   return readdirSync(DIR).filter((f) => f.endsWith('.md') && f !== 'index.md');
@@ -113,39 +95,26 @@ export function upsertNote(key: string, summary: string, content: string): void 
   const k = safeKey(key);
   writeFileSync(notePath(k), serialize(k, summary, content));
   rebuildIndex();
-  git('add', '-A');
-  git('commit', '-m', `knowledge: update ${k}`);
 }
 
 export function deleteNote(key: string): void {
   const p = notePath(key);
   if (existsSync(p)) rmSync(p);
   rebuildIndex();
-  git('add', '-A');
-  git('commit', '-m', `knowledge: delete ${safeKey(key)}`);
 }
 
 /**
- * Prepare the knowledge base at boot: create the dir, make it a git repo, and —
- * the first time only — migrate any notes still living in SQLite into files.
- * Idempotent.
+ * Prepare the knowledge base at boot: create the dir and — the first time only —
+ * migrate any notes still living in SQLite into files. Idempotent.
  */
 export function initKnowledge(): void {
   mkdirSync(DIR, { recursive: true });
-  if (!existsSync(join(DIR, '.git'))) {
-    git('init', '-q');
-    git('config', 'user.email', 'companion@local');
-    git('config', 'user.name', 'ai-companion');
-  }
-
   if (noteFiles().length === 0) {
     const legacy = allNotesForMigration();
     for (const n of legacy) {
       writeFileSync(notePath(n.key), serialize(safeKey(n.key), n.summary, n.content));
     }
     rebuildIndex();
-    git('add', '-A');
-    git('commit', '-m', `knowledge: migrate ${legacy.length} notes from sqlite`);
     if (legacy.length) console.log(`[knowledge] migrated ${legacy.length} notes from sqlite → ${DIR}`);
   } else {
     rebuildIndex();
@@ -157,36 +126,12 @@ export function knowledgePath(): string {
   return DIR;
 }
 
-export interface CommitResult {
-  hash: string;
-  /** Paths changed in this commit, relative to the knowledge dir. */
-  files: string[];
-}
-
 /**
- * Stage everything and commit it. Returns the new commit (hash + changed files),
- * or null if there was nothing to commit. Used by `grow` to land a refinement
- * pass as a single reviewable commit.
+ * A snapshot of the note files (filename → content), excluding the generated
+ * index. `grow` takes one before and after a pass to compute its change-log.
  */
-export function commitKnowledge(message: string): CommitResult | null {
-  git('add', '-A');
-  const staged = gitOut('diff', '--cached', '--name-only');
-  if (!staged) return null;
-  git('commit', '-m', message);
-  return { hash: gitOut('rev-parse', 'HEAD'), files: staged.split('\n').filter(Boolean) };
-}
-
-/** Revert a knowledge commit by hash. Returns false (and aborts) on conflict. */
-export function revertKnowledge(hash: string): boolean {
-  try {
-    execFileSync('git', ['revert', '--no-edit', hash], { cwd: DIR, stdio: 'ignore' });
-    return true;
-  } catch {
-    try {
-      execFileSync('git', ['revert', '--abort'], { cwd: DIR, stdio: 'ignore' });
-    } catch {
-      /* nothing to abort */
-    }
-    return false;
-  }
+export function snapshotNotes(): Record<string, string> {
+  const snap: Record<string, string> = {};
+  for (const f of noteFiles()) snap[f] = readFileSync(join(DIR, f), 'utf8');
+  return snap;
 }

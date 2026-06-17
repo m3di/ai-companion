@@ -6,7 +6,6 @@ import { askClaude } from './claude.js';
 import { digestFile } from './digest.js';
 import { runDream } from './dream.js';
 import { runGrow } from './grow.js';
-import { revertKnowledge } from './knowledge.js';
 import {
   addPending,
   clearPending,
@@ -22,6 +21,7 @@ import {
   listSessions,
   logMessage,
   recentDreams,
+  recentGrows,
   recentMessages,
   refreshAutoTitle,
   sessionForMessage,
@@ -543,6 +543,10 @@ async function handleCommand(e: InboundCommand): Promise<void> {
       void runGrow(adapter, chatId);
       return;
 
+    case 'grows':
+      await handleGrows(chatId, args);
+      return;
+
     case 'repos':
       await handleRepos(chatId, args);
       return;
@@ -707,6 +711,52 @@ async function handleDreams(chatId: number, arg: string): Promise<void> {
   });
 }
 
+/** List recent grow passes, or show one in full (/grows <id>). */
+async function handleGrows(chatId: number, arg: string): Promise<void> {
+  const grows = recentGrows(chatId, 20);
+  if (!grows.length) {
+    await adapter.send(chatId, {
+      text: 'No grow passes yet. Run /grow to refine the knowledge base from recent reflections.',
+      format: 'plain',
+    });
+    return;
+  }
+  const parseChanges = (raw: string): Array<{ action: string; path: string }> => {
+    try {
+      return JSON.parse(raw) as Array<{ action: string; path: string }>;
+    } catch {
+      return [];
+    }
+  };
+  const id = Number(arg);
+  if (arg && Number.isFinite(id)) {
+    const g = grows.find((x) => x.id === id);
+    if (!g) {
+      await adapter.send(chatId, { text: `No grow #${id} in the recent list.`, format: 'plain' });
+      return;
+    }
+    const changes = parseChanges(g.changes);
+    const fileList = changes.length ? changes.map((c) => `${c.action} ${c.path}`).join('\n') : '(no file changes)';
+    await adapter.send(chatId, {
+      text: `🌱 Grow #${g.id} · ${g.created_at}\nChanges:\n${fileList}`,
+      format: 'plain',
+    });
+    for (const piece of chunkRaw(g.summary)) {
+      await adapter.send(chatId, { text: piece, format: 'plain' });
+    }
+    return;
+  }
+  const lines = grows.map((g) => {
+    const n = parseChanges(g.changes).length;
+    const first = (g.summary.split('\n').find((l) => l.trim()) ?? '').replace(/[*#_`>]/g, '').slice(0, 60);
+    return `#${g.id} · ${g.created_at.slice(0, 16)} · ${n} change(s) — ${first}`;
+  });
+  await adapter.send(chatId, {
+    text: `🌱 Recent grow passes (/grows <id> for the full log):\n${lines.join('\n')}`,
+    format: 'plain',
+  });
+}
+
 // --- Callbacks --------------------------------------------------------------
 
 async function handleCallback(e: InboundCallback): Promise<void> {
@@ -741,25 +791,6 @@ async function handleCallback(e: InboundCallback): Promise<void> {
         {
           text: `❓ <b>${escapeHtml(result.question)}</b>\n✅ ${escapeHtml(result.chosen)}`,
           format: 'tgHtml',
-        },
-      );
-    }
-    return;
-  }
-
-  // Revert a grow commit in the knowledge repo.
-  if (data.startsWith('gr:')) {
-    const hash = data.slice('gr:'.length);
-    const reverted = revertKnowledge(hash);
-    await e.answer(reverted ? 'Reverted' : 'Revert failed');
-    if (e.messageId !== undefined) {
-      await adapter.edit(
-        { chatId, messageId: e.messageId },
-        {
-          text: reverted
-            ? `↩️ Reverted grow ${hash.slice(0, 8)}.`
-            : `⚠️ Couldn't auto-revert ${hash.slice(0, 8)} (conflict) — revert manually in the knowledge repo.`,
-          format: 'plain',
         },
       );
     }

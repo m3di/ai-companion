@@ -1,17 +1,19 @@
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { config } from './config.js';
-import { markDreamProcessed, pendingDreams } from './db.js';
+import { markDreamProcessed, pendingDreams, saveGrow } from './db.js';
 import { chunkRaw, toTelegramMarkdown } from './format.js';
-import { commitKnowledge, knowledgePath, rebuildIndex } from './knowledge.js';
-import type { Buttons, ChatTransport } from './transport/types.js';
+import { knowledgePath, rebuildIndex, snapshotNotes } from './knowledge.js';
+import type { ChatTransport } from './transport/types.js';
 
 /**
  * "Grow" — the knowledge-base librarian (Phase 1). Operator-triggered (/grow):
  * it reads the unprocessed "dream" reflections plus the knowledge base itself,
  * then refines the notes (merge duplicates, fix stale facts, split, re-link,
- * tighten). It works ONLY inside the knowledge repo — its sandbox is that
- * directory, so it can never touch the bot's source — and lands one reviewable
- * commit, which the user can revert with a single tap.
+ * tighten). It works ONLY inside the knowledge directory — its sandbox is that
+ * directory, so it can never touch the bot's source.
+ *
+ * It applies edits DIRECTLY to the files (no git in the data dir) and records
+ * what it changed to the `grows` change-log, viewable via /grows.
  */
 
 const GROW_SYSTEM = `You are "grow" — the librarian of this companion's knowledge base, a directory of markdown notes that is its long-term memory. You are given recent "dream" reflections (observations about the bot's activity and memory) plus the notes themselves, and your job is to make the knowledge base better.
@@ -26,7 +28,27 @@ Rules:
 - Survey first (Glob/Read) before editing.
 - Finish with a concise CHANGE SUMMARY — a few bullets on what you changed and why. If nothing needed changing, say so plainly.`;
 
-/** Run a grow pass: refine the knowledge base from pending dreams, then commit. */
+interface FileChange {
+  path: string;
+  action: 'A' | 'M' | 'D';
+  before: string;
+  after: string;
+}
+
+/** Diff two note snapshots into a per-file change-log. */
+function diffSnapshots(before: Record<string, string>, after: Record<string, string>): FileChange[] {
+  const changes: FileChange[] = [];
+  for (const path of new Set([...Object.keys(before), ...Object.keys(after)])) {
+    const b = before[path];
+    const a = after[path];
+    if (b === undefined && a !== undefined) changes.push({ path, action: 'A', before: '', after: a });
+    else if (b !== undefined && a === undefined) changes.push({ path, action: 'D', before: b, after: '' });
+    else if (b !== a && b !== undefined && a !== undefined) changes.push({ path, action: 'M', before: b, after: a });
+  }
+  return changes.sort((x, y) => x.path.localeCompare(y.path));
+}
+
+/** Run a grow pass: refine the knowledge base from pending dreams, log changes. */
 export async function runGrow(transport: ChatTransport, chatId: number): Promise<void> {
   const dreams = pendingDreams(chatId);
   const dreamBlock = dreams.length
@@ -37,6 +59,7 @@ export async function runGrow(transport: ChatTransport, chatId: number): Promise
     `The knowledge base is your working directory: \`index.md\` (auto-generated — do NOT edit) plus one \`<key>.md\` per note. ` +
     `Survey it, then refine it per your instructions. End with the CHANGE SUMMARY.`;
 
+  const before = snapshotNotes();
   let report = '';
   let ok = true;
   try {
@@ -63,15 +86,14 @@ export async function runGrow(transport: ChatTransport, chatId: number): Promise
     report = `(grow failed: ${e instanceof Error ? e.message : String(e)})`;
   }
 
-  // Regenerate the index from whatever notes now exist, land one commit, and
-  // mark the consumed dreams processed so the next grow starts fresh.
-  let committed: Awaited<ReturnType<typeof commitKnowledge>> = null;
+  // Regenerate the index, diff what changed, record the run, and consume the
+  // dreams. Edits are already on disk — no commit.
+  let changes: FileChange[] = [];
+  let savedId: number | undefined;
   if (ok) {
     rebuildIndex();
-    // A deterministic message — the agent's prose preamble makes a poor headline;
-    // the full change summary is posted to the chat and lives in the diff.
-    const from = dreams.length ? `${dreams.length} dream${dreams.length === 1 ? '' : 's'}` : 'an audit pass';
-    committed = commitKnowledge(`grow: refine knowledge from ${from}`);
+    changes = diffSnapshots(before, snapshotNotes());
+    savedId = saveGrow(chatId, report.trim() || '(no summary)', JSON.stringify(changes));
     for (const d of dreams) markDreamProcessed(d.id);
   }
 
@@ -87,18 +109,22 @@ export async function runGrow(transport: ChatTransport, chatId: number): Promise
       .catch(() => transport.send(chatId, { text: piece, format: 'plain' }).catch(() => {}));
   }
 
-  if (committed) {
-    const buttons: Buttons = [[{ text: '↩️ Revert this grow', data: `gr:${committed.hash}` }]];
+  if (savedId !== undefined) {
+    const counts = (['A', 'M', 'D'] as const).map((a) => changes.filter((c) => c.action === a).length);
+    const [add, mod, del] = counts;
+    const summary =
+      [add && `+${add} new`, mod && `~${mod} edited`, del && `−${del} removed`].filter(Boolean).join(', ') ||
+      'no file changes';
+    const list = changes.length
+      ? `\n<blockquote expandable>${changes.map((c) => `${c.action} ${c.path}`).join('\n')}</blockquote>`
+      : '';
     await transport
       .send(chatId, {
-        text: `✅ Committed <code>${committed.hash.slice(0, 8)}</code> · ${committed.files.length} file(s) changed${dreams.length ? ` · ${dreams.length} dream(s) consumed` : ''}.`,
+        text:
+          `✅ Applied to the knowledge base · ${summary} · saved as grow #${savedId}` +
+          `${dreams.length ? ` · ${dreams.length} dream(s) consumed` : ''}${list}`,
         format: 'tgHtml',
-        buttons,
       })
-      .catch(() => {});
-  } else if (ok) {
-    await transport
-      .send(chatId, { text: 'No changes were needed — knowledge base left as-is.', format: 'plain' })
       .catch(() => {});
   }
 }
