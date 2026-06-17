@@ -68,13 +68,10 @@ export async function runGrow(transport: ChatTransport, chatId: number): Promise
   let committed: Awaited<ReturnType<typeof commitKnowledge>> = null;
   if (ok) {
     rebuildIndex();
-    const headline =
-      report
-        .split('\n')
-        .map((s) => s.trim())
-        .find(Boolean)
-        ?.slice(0, 72) ?? 'refine knowledge base';
-    committed = commitKnowledge(`grow: ${headline}`);
+    // A deterministic message — the agent's prose preamble makes a poor headline;
+    // the full change summary is posted to the chat and lives in the diff.
+    const from = dreams.length ? `${dreams.length} dream${dreams.length === 1 ? '' : 's'}` : 'an audit pass';
+    committed = commitKnowledge(`grow: refine knowledge from ${from}`);
     for (const d of dreams) markDreamProcessed(d.id);
   }
 
