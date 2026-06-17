@@ -5,6 +5,8 @@ import { config, type PermissionMode } from './config.js';
 import { askClaude } from './claude.js';
 import { digestFile } from './digest.js';
 import { runDream } from './dream.js';
+import { runGrow } from './grow.js';
+import { revertKnowledge } from './knowledge.js';
 import {
   addPending,
   clearPending,
@@ -533,6 +535,14 @@ async function handleCommand(e: InboundCommand): Promise<void> {
       await handleDreams(chatId, args);
       return;
 
+    case 'grow':
+      await adapter.send(chatId, {
+        text: '🌱 Growing — refining the knowledge base from recent reflections. A couple of minutes…',
+        format: 'plain',
+      });
+      void runGrow(adapter, chatId);
+      return;
+
     case 'repos':
       await handleRepos(chatId, args);
       return;
@@ -731,6 +741,25 @@ async function handleCallback(e: InboundCallback): Promise<void> {
         {
           text: `❓ <b>${escapeHtml(result.question)}</b>\n✅ ${escapeHtml(result.chosen)}`,
           format: 'tgHtml',
+        },
+      );
+    }
+    return;
+  }
+
+  // Revert a grow commit in the knowledge repo.
+  if (data.startsWith('gr:')) {
+    const hash = data.slice('gr:'.length);
+    const reverted = revertKnowledge(hash);
+    await e.answer(reverted ? 'Reverted' : 'Revert failed');
+    if (e.messageId !== undefined) {
+      await adapter.edit(
+        { chatId, messageId: e.messageId },
+        {
+          text: reverted
+            ? `↩️ Reverted grow ${hash.slice(0, 8)}.`
+            : `⚠️ Couldn't auto-revert ${hash.slice(0, 8)} (conflict) — revert manually in the knowledge repo.`,
+          format: 'plain',
         },
       );
     }

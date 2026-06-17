@@ -68,6 +68,15 @@ function git(...args: string[]): void {
   }
 }
 
+/** Run git in the knowledge dir and return stdout (empty string on failure). */
+function gitOut(...args: string[]): string {
+  try {
+    return execFileSync('git', args, { cwd: DIR, encoding: 'utf8' }).trim();
+  } catch {
+    return '';
+  }
+}
+
 function noteFiles(): string[] {
   if (!existsSync(DIR)) return [];
   return readdirSync(DIR).filter((f) => f.endsWith('.md') && f !== 'index.md');
@@ -92,7 +101,7 @@ export function getNote(key: string): Note | undefined {
 }
 
 /** Regenerate index.md from the note files (the index is always derived). */
-function rebuildIndex(): void {
+export function rebuildIndex(): void {
   const notes = listNotes();
   const list = notes.length
     ? notes.map((n) => `- [${n.key}](${n.key}.md) — ${n.summary}`).join('\n')
@@ -140,5 +149,44 @@ export function initKnowledge(): void {
     if (legacy.length) console.log(`[knowledge] migrated ${legacy.length} notes from sqlite → ${DIR}`);
   } else {
     rebuildIndex();
+  }
+}
+
+/** The knowledge base's absolute path (a worker/grow agent's working dir). */
+export function knowledgePath(): string {
+  return DIR;
+}
+
+export interface CommitResult {
+  hash: string;
+  /** Paths changed in this commit, relative to the knowledge dir. */
+  files: string[];
+}
+
+/**
+ * Stage everything and commit it. Returns the new commit (hash + changed files),
+ * or null if there was nothing to commit. Used by `grow` to land a refinement
+ * pass as a single reviewable commit.
+ */
+export function commitKnowledge(message: string): CommitResult | null {
+  git('add', '-A');
+  const staged = gitOut('diff', '--cached', '--name-only');
+  if (!staged) return null;
+  git('commit', '-m', message);
+  return { hash: gitOut('rev-parse', 'HEAD'), files: staged.split('\n').filter(Boolean) };
+}
+
+/** Revert a knowledge commit by hash. Returns false (and aborts) on conflict. */
+export function revertKnowledge(hash: string): boolean {
+  try {
+    execFileSync('git', ['revert', '--no-edit', hash], { cwd: DIR, stdio: 'ignore' });
+    return true;
+  } catch {
+    try {
+      execFileSync('git', ['revert', '--abort'], { cwd: DIR, stdio: 'ignore' });
+    } catch {
+      /* nothing to abort */
+    }
+    return false;
   }
 }

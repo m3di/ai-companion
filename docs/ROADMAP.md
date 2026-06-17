@@ -71,13 +71,14 @@ The unlock. Most of the value-at-risk lives here; everything downstream depends 
 - [x] **`dreams` table** — dream reflections persist to a `dreams` table (`id`, `chat_id`, `report`, `created_at`, `processed_at`) instead of post-and-forget. `runDream` saves each genuine report; `grow` (Phase 1) consumes `pendingDreams()` and stamps `markDreamProcessed()`. A `/dreams` command lists them (`/dreams <id>` for the full report).
 - [x] **Session typing + rolling recap** — the WorkSession/QuerySession split is realized by the concierge-only model (concierge = query/control layer; workers = work layer; per-turn visibility). Each worker now also keeps an auto **recap** (a `recap` column, refreshed from its latest output after every turn, no LLM call); the concierge index and `/sessions` board surface it, so "what's X doing?" is answerable without re-reading the thread.
 
-### Phase 1 — Close the loop, on our own data  ·  ⬜ not started
+### Phase 1 — Close the loop, on our own data  ·  🔄 in progress
 
 The crown jewel — the part nobody else has. Prove it on ourselves before exposing it to a team.
 
-- [ ] Schedule **dream nightly**; persist structured dream-records instead of post-and-forget.
-- [ ] Build **grow** — operator-triggered, reads recent dream-records + current `knowledge/`, reorganizes/rewrites the knowledge repo (re-categorize, split sub-systems, refresh `index.md`), commits to a branch to skim. Knowledge-only → low blast radius.
-- [ ] Dogfood until grow's branches are consistently good.
+- [x] **Dream nightly** — `index.ts` schedules `runDream` for each allowed chat at `NIGHTLY_HOUR` (default 04:00); records persist to the `dreams` table (Phase 0). So reflections accumulate unattended.
+- [x] **Build `grow`** (`src/grow.ts`, `/grow`) — operator-triggered. Reads `pendingDreams()` + the knowledge repo (its working dir = `KNOWLEDGE_DIR`, sandboxed — Read/Write/Edit/Glob/Grep, no Bash, can't touch app code), refines the notes (merge/split/fix/re-link/tighten), regenerates `index.md`, lands **one `grow:` commit**, posts a change summary + a one-tap **↩️ Revert**, and marks the consumed dreams processed. Commit/revert plumbing verified.
+  - _Design note: lands on the knowledge repo's main as a single revertible commit (not a branch-to-merge) — lowest-friction review for a local, single-user, git-revertible base. A branch/approve flow is a later option if grow's output needs gating._
+- [ ] **Dogfood** until grow's commits are consistently good (run `/dream` to seed reflections, then `/grow`; revert any weak passes).
 
 ### Phase 2 — Get the team on it  ·  ⬜ not started
 
@@ -94,6 +95,7 @@ The crown jewel — the part nobody else has. Prove it on ourselves before expos
 
 ## Changelog
 
+- **2026-06-17** — **Phase 1 — the flywheel is closed.** `dream` now runs nightly (scheduled in `index.ts` at `NIGHTLY_HOUR`, default 04:00, per allowed chat) so reflections accumulate on their own. Built **`grow`** (`src/grow.ts`, `/grow`): a knowledge-only librarian that reads `pendingDreams()` + the knowledge repo, refines the notes in its sandboxed working dir (no app-code access), regenerates `index.md`, lands one revertible `grow:` commit, posts a summary with a ↩️ Revert button, and marks dreams processed. Added `commitKnowledge`/`revertKnowledge`/`rebuildIndex` to `src/knowledge.ts` (commit/revert lifecycle verified). The `messages → dream → dream-records → grow → committed knowledge` loop now runs end-to-end; what remains is dogfooding it.
 - **2026-06-17** — Phase 0 **rolling worker recap** → **Phase 0 complete**. Each worker keeps an auto `recap` (new `chat_sessions.recap` column) refreshed from its latest output after every turn — no LLM call, can't go stale like a memo. The concierge thread index and `/sessions` board prefer it, so "what's that worker doing?" is answerable without re-reading. With this, the substrate phase is done: transport seam, concierge-only model, git-tracked knowledge, persisted dreams, and the WorkSession/QuerySession split + recap. Next: **Phase 1 — the flywheel** (schedule `dream` nightly + build `grow`).
 - **2026-06-17** — Phase 0 **`dreams` table**: dream reflections now persist (`db.saveDream`) to a `dreams` table with a `processed_at` flag, so they're no longer post-and-forget — `grow` will consume `pendingDreams()` and stamp `markDreamProcessed()`. Added a `/dreams` viewer (list + `/dreams <id>` full report). The dream stays read-only/dry-run; only its output is now captured. This is the last raw-material piece before the Phase 1 flywheel.
 - **2026-06-17** — Phase 0 **Knowledge → git-tracked files**: new `src/knowledge.ts` replaces the SQLite `notes` table with a file-backed, git-tracked base — one `<key>.md` per note (frontmatter + `[[links]]`) + a generated protocol-headed `index.md`, in its own git repo under `KNOWLEDGE_DIR` (default `data/knowledge`), auto-committing each write. Dropped `chatId` (one shared brain). 15 legacy notes migrated on first boot (idempotent). `digest`/`concierge`/`ui` now read & write files; SQLite stays the firehose. This is the substrate `dream`-persistence and `grow` stand on.

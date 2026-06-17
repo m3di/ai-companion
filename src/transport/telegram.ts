@@ -22,6 +22,7 @@ const COMMANDS: CommandSpec[] = [
   { command: 'repos', description: 'List, add, or scan your workspace repos' },
   { command: 'dream', description: 'Offline self-reflection over recent activity' },
   { command: 'dreams', description: 'List saved dream reflections (/dreams <id> for one)' },
+  { command: 'grow', description: 'Refine the knowledge base from recent reflections' },
   { command: 'status', description: 'Concierge + worker overview' },
 ];
 
