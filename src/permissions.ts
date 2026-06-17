@@ -70,11 +70,15 @@ export function createCanUseTool(view: RunningView) {
     input: Record<string, unknown>,
     { signal }: { signal: AbortSignal },
   ): Promise<PermissionResult> => {
-    if (SAFE_TOOLS.has(toolName) || approved.has(toolName)) return { behavior: 'allow' };
+    // Always echo the (unchanged) input back on allow — the SDK/CLI control
+    // protocol validates the result and rejects an allow without updatedInput
+    // with a ZodError, which silently fails the tool even after the user taps ✅.
+    const allow = { behavior: 'allow', updatedInput: input } as const;
+    if (SAFE_TOOLS.has(toolName) || approved.has(toolName)) return allow;
     // Read the mode live, so switching a thread to auto mid-turn stops the
     // prompts immediately (unsticks a stalled background worker).
     const mode = getPrefs(view.key).permissionMode;
-    if (mode === 'auto' || mode === 'bypassPermissions') return { behavior: 'allow' };
+    if (mode === 'auto' || mode === 'bypassPermissions') return allow;
 
     const id = nextId();
     const { detail, summary } = describeTool(toolName, input);
@@ -133,6 +137,6 @@ export function createCanUseTool(view: RunningView) {
     if (decision === 'deny') {
       return { behavior: 'deny', message: `User denied ${toolName} via Telegram.` };
     }
-    return { behavior: 'allow' };
+    return allow;
   };
 }
