@@ -1,67 +1,54 @@
 # 🤖 ai-companion
 
-> Drive **Claude Code** from a Telegram chat — run several coding sessions at once, switch between them with a tap, and approve actions from your phone.
+> A team chatbot that **runs real work** and **learns from it.** Talk to a concierge in chat; it spawns Claude Code worker sessions to do the work, and a nightly **dream → grow** loop turns everything that happened into a curated, git-tracked knowledge base. Start empty, and let it grow into the brain of your team's workflow.
 
 ![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178c6?logo=typescript&logoColor=white)
 ![Node](https://img.shields.io/badge/Node-%E2%89%A520-339933?logo=node.js&logoColor=white)
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 ![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)
 
-`ai-companion` runs on your own machine, long-polls Telegram, and relays your
-messages to Claude Code through the
-[Claude Agent SDK](https://platform.claude.com/docs/en/agent-sdk/typescript).
-It's a pocket remote control for Claude Code: ask it to fix a bug on the train,
-watch the live progress, tap **Allow** on a command, and read the diff — all
-from Telegram.
-
-It uses your existing Claude Code login (no API key required) and keeps state in
-a small SQLite file. No server, no database to run, no RAG — Claude Code reads
+`ai-companion` runs on your own machine (or a container), long-polls a chat
+surface, and drives [Claude Code](https://platform.claude.com/docs/en/agent-sdk/typescript)
+through the Claude Agent SDK. It uses your existing Claude Code login — no API
+key required — and keeps state in a small SQLite file plus a git-tracked
+knowledge directory. No server, no separate database, no RAG — Claude Code reads
 your files directly.
 
----
-
-## ✨ Features
-
-- **Many sessions, one chat.** A persistent keyboard at the bottom of the chat
-  lists every session. Tap one to switch to it; the rest keep running in the
-  background and surface their state through badges (`🟢` running · `❗` needs
-  permission · `❓` waiting on a question · `✅` done).
-- **Catch-up on switch.** Attaching to a session replays its last few messages
-  and, if it's still working, resumes a live status feed.
-- **Live status.** A single message edits itself in place to show the current
-  action plus an expandable activity log, with a **🛑 Stop** button.
-- **Approve from your phone.** Tools that change things prompt inline —
-  **✅ Allow · ⛔ Deny · ♾️ Always allow** — unless the session's permission mode
-  auto-approves them.
-- **Rich UI the model can compose.** Claude can send formatted messages,
-  link/quick-reply buttons, and tappable multiple-choice questions (see
-  [Telegram UI tools](#-telegram-ui-tools)).
-- **Quick state at a glance.** Each of your messages gets a reaction:
-  ✍️ working · 👀 queued · 👍 done · 🤔 cancelled · 😱 errored.
-- **Per-session working directory and resumable context**, persisted across
-  restarts in SQLite.
-- **Dynamic system prompt** in `prompts/system.md`, re-read every turn — edit it
-  anytime, no restart.
-- **Tight access control** — only allow-listed chats can drive the bot.
+It's a **general framework**: clone it, point it at your repos, and grow your own
+companion. This repo ships the engine; your bot's knowledge lives only on your
+machine.
 
 ---
 
-## 🧭 How it fits together
+## 🧠 The idea
 
 ```
-                 ┌──────────────────────── one Telegram chat ───────────────────────┐
-                 │   ▶ 🟢 api #1     ✅ scraper #2     ❗ deploy #3     ➕ New        │  ← bottom keyboard
-                 └───────────────────────────────────────────────────────────────────┘
-                            │ tap to switch              every session keeps running
-                            ▼
-Telegram ──getUpdates──▶ bot (grammy) ──askClaude()──▶ Claude Agent SDK ──▶ Claude Code
-   ▲                        │   │                                            (resumable)
-   └──── replies ───────────┘   └── SQLite: sessions · prefs · message log
+                        you ─────────────▶  🎛️ Concierge  ─── spawns ──▶  🔧 workers
+                     (just talk)            (one front door)              (Claude Code sessions)
+                                                  │                            │
+                                                  ▼                            ▼
+                            SQLite (the firehose: sessions, messages)   work on your repos
+                                                  │
+                              nightly  ──▶  💤 dream  ──▶  dream records
+                                                                │
+                              operator ──▶  🌱 grow  ◀──────────┘
+                                                  │
+                                                  ▼
+                                   knowledge/ (git-tracked curated brain)
+                                                  │
+                                                  └──▶ read by every future turn
 ```
 
-Each session maps to a resumable Claude Code session (`<chatId>:<slot>`),
-serialized so one turn runs at a time per session while independent sessions run
-concurrently.
+- **One front door.** You always talk to the **concierge**. It answers, manages
+  threads, and hands real work to **worker** sessions. Worker messages are tagged
+  `🔧 <title>` — reply to one to talk to that worker directly.
+- **Workers** are parallel, resumable Claude Code sessions. They run in the
+  background and report through the concierge; one you're watching streams live.
+- **The flywheel.** SQLite is the short-term firehose (what happened).
+  `knowledge/` is the long-term brain (what we learned). Two transforms connect
+  them: **dream** compacts recent activity into reflections; **grow** promotes
+  those reflections into committed, curated knowledge. Every interaction makes
+  the next answer better.
 
 ---
 
@@ -73,23 +60,85 @@ concurrently.
 git clone https://github.com/m3di/ai-companion.git
 cd ai-companion
 npm install
-cp .env.example .env       # then fill it in (see below)
+cp .env.example .env        # then fill it in (see below)
 ```
 
 1. **Create a bot** — message [@BotFather](https://t.me/BotFather) → `/newbot` →
    copy the token into `TELEGRAM_BOT_TOKEN`.
-2. **Pick a working directory** — set `CLAUDE_WORKING_DIR` to the folder Claude
-   should operate in.
+2. **Pick a working directory** — set `CLAUDE_WORKING_DIR` to where Claude should
+   operate; `WORKSPACE_DIR` is the folder holding the repos it may touch.
 3. **Find your chat ID** — run `npm run dev`, message the bot; it replies with
    your chat ID. Put it in `ALLOWED_CHAT_IDS` and restart.
-4. **Say hi** — message the bot, pick a permission mode, and you're driving
-   Claude Code from Telegram.
+4. **Say hi** — just tell the concierge what you need.
 
 ```bash
 npm run dev        # watch mode (auto-reload)
 npm start          # run once
 npm run typecheck  # tsc --noEmit
 ```
+
+---
+
+## 💬 Talking to it
+
+There is exactly **one** interaction model, so nothing is ambiguous:
+
+- **Plain message → the concierge.** It decides what to do: answer, manage
+  threads, or delegate work to a worker.
+- **Reply to a `🔧` worker message → that worker.** A one-off direct line; your
+  next plain message is back with the concierge. You never "switch into" a thread.
+- **Background work** runs quietly and the concierge reports it when done; work
+  you ask to watch streams into the chat, tagged with its worker's title.
+
+### Commands
+
+| Command       | What it does                                                   |
+| ------------- | -------------------------------------------------------------- |
+| `/sessions`   | Status board of your worker threads.                           |
+| `/capture`    | Toggle capture mode — queue notes/forwards silently all day.   |
+| `/process`    | Triage everything captured and fan it out to threads.          |
+| `/cancel`     | Stop all running work in this chat.                            |
+| `/repos`      | List, add, or scan your workspace repos.                       |
+| `/dream`      | Run an offline self-reflection over recent activity now.       |
+| `/dreams`     | List saved reflections (`/dreams <id>` for the full report).   |
+| `/grow`       | Refine the knowledge base from recent reflections.             |
+| `/status`     | Concierge + worker overview.                                   |
+
+---
+
+## 🌱 The knowledge flywheel
+
+- **Knowledge base** — `KNOWLEDGE_DIR` (default `data/knowledge`) is a
+  **git-tracked** directory of markdown notes: one `<key>.md` per note
+  (frontmatter + body, cross-linked as `[[other-key]]`) plus a generated
+  `index.md`. Workers and the concierge read and write it through their tools, and
+  every write auto-commits — so the brain has real, reviewable history.
+- **dream** — a read-only reflection pass (scheduled nightly at `NIGHTLY_HOUR`,
+  or on demand via `/dream`). It reviews recent activity and the bot's memory and
+  records a report to the `dreams` table. It changes nothing.
+- **grow** — operator-triggered (`/grow`). It reads the unprocessed dreams and the
+  knowledge base, then **refines the notes** (merge duplicates, fix stale facts,
+  split, re-link, tighten) and lands **one reviewable commit** — with a one-tap
+  **↩️ Revert**. Grow's working directory *is* the knowledge repo, so it can never
+  touch the bot's source.
+
+The knowledge directory is each deployment's own — it's git-ignored from this
+repo and persists on your machine (or a PVC), never in the framework.
+
+---
+
+## 🎛️ Telegram UI tools
+
+The bot exposes a small MCP server so Claude can compose chat UI directly instead
+of only plain text:
+
+- **`send`** — a message in Telegram HTML with optional inline buttons.
+- **`ask`** — one quick question with tappable options; blocks for the answer.
+- **`askUserQuestion`** — up to four structured questions at once.
+
+A worker also has knowledge tools (`recallNotes` / `readNote` / `saveFinding`) so
+hard-won answers are saved once and reused, and a `setMemo` tool to keep its
+thread labeled.
 
 ---
 
@@ -101,64 +150,32 @@ All configuration is environment variables (see [`.env.example`](.env.example)):
 | -------------------- | :------: | --------------------------------------------------------------------------- |
 | `TELEGRAM_BOT_TOKEN` |    ✅    | Bot token from @BotFather.                                                   |
 | `ALLOWED_CHAT_IDS`   |    ✅    | Comma-separated chat IDs allowed to use the bot. Empty = nobody.             |
-| `CLAUDE_WORKING_DIR` |    ✅    | Directory Claude Code operates in (its file-access root).                    |
-| `PERMISSION_MODE`    |          | Default permission mode for new sessions (`default` · `acceptEdits` · `bypassPermissions`). |
+| `CLAUDE_WORKING_DIR` |    ✅    | Directory Claude Code operates in (its file-access root).                   |
+| `WORKSPACE_DIR`      |          | Root holding your cloned repos. Default: the parent of `CLAUDE_WORKING_DIR`. |
+| `PERMISSION_MODE`    |          | Default mode for worker tools (`default` · `acceptEdits` · `auto`).         |
 | `CLAUDE_MODEL`       |          | Model override, e.g. `claude-opus-4-8`. Empty = SDK/CLI default.            |
+| `KNOWLEDGE_DIR`      |          | Git-tracked knowledge base. Default `data/knowledge`.                       |
+| `NIGHTLY_HOUR`       |          | Hour (0–23) to run the nightly dream. Default `4`.                          |
 | `SYSTEM_PROMPT_PATH` |          | Path to the dynamic system prompt. Default `prompts/system.md`.             |
 | `DB_PATH`            |          | SQLite path. Default `data/companion.db`.                                    |
 
-### Permission modes
-
-When you start a session you choose how it handles tools:
-
-- **⚡ Auto** — works autonomously, only stopping for genuinely risky actions.
-- **✏️ Accept edits** — file edits run automatically; commands still ask you.
-- **🔐 Ask each** — prompts before every command and edit.
-
----
-
-## 💬 Commands
-
-| Command       | What it does                                                          |
-| ------------- | -------------------------------------------------------------------- |
-| `/sessions`   | Show / refresh the bottom session keyboard.                          |
-| `/new`        | Start another session (you pick its permission mode).               |
-| `/close`      | Close the current session and remove it from the keyboard.          |
-| `/history`    | Reopen a previously closed session.                                 |
-| `/cancel`     | Stop the turn running in the current session.                       |
-| `/cwd [path]` | Show or set the current session's working directory.               |
-| `/status`     | Session info: Claude session id, message count, working dir, mode.  |
-
-Tapping a session button on the bottom keyboard switches the active session.
-
----
-
-## 🎛️ Telegram UI tools
-
-The bot exposes a small MCP server so Claude can compose Telegram UI directly,
-instead of only plain text:
-
-- **`send`** — a message in Telegram HTML with optional inline buttons
-  (expandable details, spoilers, code, link/quick-reply buttons).
-- **`ask`** — one quick question with tappable options; blocks for the answer.
-- **`askUserQuestion`** — up to four structured questions at once, each option
-  carrying a one-line explanation. (The built-in `AskUserQuestion` needs an
-  interactive terminal it doesn't have here, so this renders the same thing as
-  Telegram buttons.)
+The system prompt in `prompts/system.md` is re-read every turn — edit it anytime,
+no restart.
 
 ---
 
 ## 🔒 Security
 
-A Telegram bot token is effectively public, and this bot can run tools on your
-machine. Two things keep that safe:
+A bot token is effectively public, and this bot runs tools on your machine. Two
+things keep that safe:
 
 1. **Allowlist** — only chats in `ALLOWED_CHAT_IDS` are served; everyone else is
    refused. Keep it tight.
-2. **Permission mode** — start with **Ask each** or **Accept edits** and only
-   move to **Auto** once you trust a given workspace.
+2. **Permission mode** — start workers on **Ask each** or **Accept edits** and
+   only move to **Auto** for workspaces you trust.
 
-`.env` and `data/` are git-ignored. Never commit your token.
+`.env` and `data/` (your SQLite + knowledge base) are git-ignored. Never commit
+your token or your instance's knowledge.
 
 ---
 
@@ -166,17 +183,29 @@ machine. Two things keep that safe:
 
 ```
 src/
-├── index.ts        entry point — boots the bot + graceful shutdown
-├── telegram.ts     bot wiring: commands, callbacks, turn queue
-├── sessions.ts     multi-session model, bottom keyboard, attach/switch
-├── claude.ts       Claude Agent SDK wrapper (normalizes events)
-├── permissions.ts  inline Allow/Deny/Always-allow tool gating
-├── ui.ts           Telegram UI tools (send / ask / askUserQuestion)
-├── liveStatus.ts   the self-editing live status message
-├── format.ts       Markdown/HTML formatting + tool summaries
-├── db.ts           SQLite schema + queries
-└── config.ts       env-var configuration
+├── index.ts          entry point — boot, nightly scheduler, graceful shutdown
+├── transport/
+│   ├── types.ts      the ChatAdapter contract (transport-agnostic)
+│   └── telegram.ts   Telegram adapter: grammy runner, events, outbound API
+├── dispatch.ts       the transport-agnostic core: turns, routing, commands
+├── sessions.ts       worker views, per-turn visibility, status badges
+├── concierge.ts      the concierge agent + its bot-management tools
+├── claude.ts         Claude Agent SDK wrapper (normalizes events)
+├── permissions.ts    inline Allow/Deny/Always-allow tool gating
+├── ui.ts             Telegram UI tools (send / ask / knowledge tools)
+├── liveStatus.ts     the self-editing live status message
+├── format.ts         Markdown/HTML formatting + tool summaries
+├── db.ts             SQLite schema + queries (the firehose)
+├── knowledge.ts      the git-tracked knowledge base (files + commits)
+├── dream.ts          offline self-reflection → dreams table
+├── grow.ts           the knowledge-base librarian (dreams → committed notes)
+├── digest.ts         digest a document into knowledge notes
+├── workspace.ts      the workspace repo registry
+└── config.ts         env-var configuration
 ```
+
+The chat surface is chosen in one place (`index.ts`). The core talks only to a
+`ChatAdapter`, so a second transport (e.g. Slack) is a new adapter, not a rewrite.
 
 ---
 
