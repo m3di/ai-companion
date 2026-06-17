@@ -532,7 +532,7 @@ async function handleCommand(e: InboundCommand): Promise<void> {
         return;
       }
       await adapter.send(chatId, { text: `📥 Digesting ${args} into notes…`, format: 'plain' });
-      const res = await digestFile(chatId, expandPath(args));
+      const res = await digestFile(expandPath(args));
       await adapter.send(chatId, {
         text: res.error ? `⚠️ ${res.error}` : `✅ Digested into ${res.keys.length} notes:\n${res.keys.join('\n')}`,
         format: 'plain',

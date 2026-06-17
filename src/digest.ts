@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { config } from './config.js';
-import { listNotes, upsertNote } from './db.js';
+import { listNotes, upsertNote } from './knowledge.js';
 
 /**
  * Digest a source into the bot's knowledge base: read it, break it into compact,
@@ -48,11 +48,7 @@ function parseNotes(text: string): Array<{ key: string; summary: string; content
 }
 
 /** Digest a file at `path` into notes. Returns the keys written, or an error. */
-export async function digestFile(
-  chatId: number,
-  path: string,
-  instructions?: string,
-): Promise<DigestResult> {
+export async function digestFile(path: string, instructions?: string): Promise<DigestResult> {
   let source: string;
   try {
     source = readFileSync(path, 'utf8');
@@ -60,7 +56,7 @@ export async function digestFile(
     return { keys: [], error: `Couldn't read ${path}` };
   }
 
-  const existing = listNotes(chatId);
+  const existing = listNotes();
   const existingBlock = existing.length
     ? `Existing notes (reuse keys to update; don't duplicate):\n${existing.map((n) => `- ${n.key}: ${n.summary}`).join('\n')}\n\n`
     : '';
@@ -92,6 +88,6 @@ export async function digestFile(
 
   const notes = parseNotes(text);
   if (notes.length === 0) return { keys: [], error: 'no notes extracted' };
-  for (const n of notes) upsertNote(chatId, n.key, n.summary, n.content);
+  for (const n of notes) upsertNote(n.key, n.summary, n.content);
   return { keys: notes.map((n) => n.key) };
 }

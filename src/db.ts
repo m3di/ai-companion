@@ -271,15 +271,11 @@ const stmts = {
   recentCorrections: db.prepare<[number, number]>(
     'SELECT message, title, wrong_title FROM route_log WHERE chat_id = ? AND wrong_slot IS NOT NULL ORDER BY id DESC LIMIT ?',
   ),
-  listNotes: db.prepare<[number]>('SELECT key, summary FROM notes WHERE chat_id = ? ORDER BY key'),
-  getNote: db.prepare<[number, string]>(
-    'SELECT key, summary, content FROM notes WHERE chat_id = ? AND key = ?',
+  // Notes moved to the file-backed knowledge base (src/knowledge.ts); the table
+  // is kept only as a one-time migration source (latest write per key wins).
+  allNotesForMigration: db.prepare(
+    'SELECT key, summary, content FROM notes ORDER BY updated_at ASC',
   ),
-  upsertNote: db.prepare<[number, string, string, string]>(`
-    INSERT INTO notes (chat_id, key, summary, content, updated_at) VALUES (?, ?, ?, ?, datetime('now'))
-    ON CONFLICT(chat_id, key) DO UPDATE SET summary = excluded.summary, content = excluded.content, updated_at = datetime('now')
-  `),
-  deleteNote: db.prepare<[number, string]>('DELETE FROM notes WHERE chat_id = ? AND key = ?'),
   recordOutbound: db.prepare<[number, number, string]>(`
     INSERT INTO message_routes (chat_id, message_id, session_key) VALUES (?, ?, ?)
     ON CONFLICT(chat_id, message_id) DO UPDATE SET session_key = excluded.session_key
@@ -525,17 +521,9 @@ export interface Note {
   content: string;
 }
 
-/** The note index (key + one-line summary) for fast onboarding. */
-export function listNotes(chatId: number): Array<{ key: string; summary: string }> {
-  return stmts.listNotes.all(chatId) as Array<{ key: string; summary: string }>;
-}
-
-export function getNote(chatId: number, key: string): Note | undefined {
-  return stmts.getNote.get(chatId, key) as Note | undefined;
-}
-
-export function upsertNote(chatId: number, key: string, summary: string, content: string): void {
-  stmts.upsertNote.run(chatId, key, summary, content);
+/** All legacy notes from SQLite, oldest first — the one-time migration source. */
+export function allNotesForMigration(): Note[] {
+  return stmts.allNotesForMigration.all() as Note[];
 }
 
 /** Tag a bot message with the session it belongs to (for reply-routing). */
@@ -604,8 +592,4 @@ export function isCapturing(chatId: number): boolean {
 
 export function setCapturing(chatId: number, on: boolean): void {
   stmts.setCapturing.run(on ? 1 : 0, chatId);
-}
-
-export function deleteNote(chatId: number, key: string): void {
-  stmts.deleteNote.run(chatId, key);
 }

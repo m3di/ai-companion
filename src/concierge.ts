@@ -3,12 +3,9 @@ import { z } from 'zod';
 import { config } from './config.js';
 import {
   createSession,
-  deleteNote,
   getMemo,
-  getNote,
   getSession,
   getSharedMemory,
-  listNotes,
   listSessions,
   markTitleExplicit,
   recentMessages,
@@ -18,8 +15,8 @@ import {
   setSessionStatus,
   setSessionTitle,
   setSharedMemory,
-  upsertNote,
 } from './db.js';
+import { deleteNote, getNote, listNotes, upsertNote } from './knowledge.js';
 import { digestFile } from './digest.js';
 import { escapeHtml } from './format.js';
 import { workspaceManifest } from './workspace.js';
@@ -110,7 +107,7 @@ export function conciergeSystemPrompt(chatId: number): string {
   const repos = workspaceManifest();
   const routingLine =
     '- Routing: reply-based — every plain message reaches YOU (home base); the user addresses a worker by replying to one of its messages';
-  const notes = listNotes(chatId);
+  const notes = listNotes();
   const notesIndex = notes.length
     ? notes.map((n) => `- ${n.key}: ${n.summary}`).join('\n')
     : '(empty — digest a source or write notes to build it)';
@@ -378,7 +375,7 @@ export function buildConciergeServer(view: RunningView) {
     'Read a file and digest it into the knowledge base as compact note units (merging with existing notes). Use to onboard a document (e.g. a knowledge map) into memory so it can be skimmed efficiently later.',
     { path: z.string().describe('Absolute path to the file to digest'), instructions: z.string().optional().describe('Optional: how to focus the digest') },
     async (args) => {
-      const res = await digestFile(chatId, args.path, args.instructions);
+      const res = await digestFile(args.path, args.instructions);
       if (res.error) return { content: [{ type: 'text' as const, text: `Digest failed: ${res.error}` }], isError: true };
       return { content: [{ type: 'text' as const, text: `Digested into ${res.keys.length} notes: ${res.keys.join(', ')}` }] };
     },
@@ -389,7 +386,7 @@ export function buildConciergeServer(view: RunningView) {
     'Read the full content of a knowledge note by key (the index of keys + summaries is in your context).',
     { key: z.string() },
     async (args) => {
-      const n = getNote(chatId, args.key);
+      const n = getNote(args.key);
       return { content: [{ type: 'text' as const, text: n ? n.content : `No note "${args.key}".` }] };
     },
   );
@@ -399,7 +396,7 @@ export function buildConciergeServer(view: RunningView) {
     'Create or update a knowledge note (compact, self-contained; reference related notes inline as [[their-key]]). Use to capture or correct a unit of knowledge.',
     { key: z.string().describe('Short kebab-case slug'), summary: z.string().describe('<=12 word index line'), content: z.string() },
     async (args) => {
-      upsertNote(chatId, args.key.slice(0, 60), args.summary.slice(0, 120), args.content);
+      upsertNote(args.key.slice(0, 60), args.summary.slice(0, 120), args.content);
       return { content: [{ type: 'text' as const, text: `Saved note "${args.key}".` }] };
     },
   );
@@ -409,7 +406,7 @@ export function buildConciergeServer(view: RunningView) {
     'Delete a knowledge note by key (e.g. it is obsolete or merged into another).',
     { key: z.string() },
     async (args) => {
-      deleteNote(chatId, args.key);
+      deleteNote(args.key);
       return { content: [{ type: 'text' as const, text: `Deleted note "${args.key}".` }] };
     },
   );

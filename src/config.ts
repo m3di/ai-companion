@@ -38,4 +38,8 @@ export const config = {
   routing: (process.env.ROUTING || 'address') as 'address' | 'classifier',
   systemPromptPath: resolve(process.env.SYSTEM_PROMPT_PATH || 'prompts/system.md'),
   dbPath: resolve(process.env.DB_PATH || 'data/companion.db'),
+  // The git-tracked knowledge base (curated note-units + index.md). Its own git
+  // repo, so a future "grow" pass can diff/commit it without touching app code.
+  // Under data/ → gitignored from this repo, persisted on the PVC in prod.
+  knowledgeDir: resolve(process.env.KNOWLEDGE_DIR || 'data/knowledge'),
 } as const;

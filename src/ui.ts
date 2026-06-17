@@ -1,6 +1,7 @@
 import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
-import { getNote, listNotes, recordOutbound, setMemo, upsertNote } from './db.js';
+import { recordOutbound, setMemo } from './db.js';
+import { getNote, listNotes, upsertNote } from './knowledge.js';
 import { escapeHtml } from './format.js';
 import { CONTROL_SLOT, type RunningView } from './sessions.js';
 import type { Buttons } from './transport/types.js';
@@ -239,7 +240,7 @@ export function buildUiServer(view: RunningView) {
     'List the shared knowledge notes (durable findings saved across threads) as an index of key + one-line summary. Call this before substantial digging to check whether a past finding already answers the question; then readNote(key) for the full content.',
     {},
     async () => {
-      const notes = listNotes(view.chatId);
+      const notes = listNotes();
       const text = notes.length
         ? notes.map((n) => `- ${n.key} — ${n.summary}`).join('\n')
         : '(no notes yet)';
@@ -252,7 +253,7 @@ export function buildUiServer(view: RunningView) {
     'Read the full content of one knowledge note by its key (get keys from recallNotes).',
     { key: z.string() },
     async (args) => {
-      const note = getNote(view.chatId, args.key);
+      const note = getNote(args.key);
       return {
         content: [{ type: 'text' as const, text: note ? note.content : `No note "${args.key}".` }],
       };
@@ -268,7 +269,7 @@ export function buildUiServer(view: RunningView) {
       content: z.string().describe('Distilled finding: conclusion + key specifics, self-contained'),
     },
     async (args) => {
-      upsertNote(view.chatId, args.key.slice(0, 60), args.summary.slice(0, 120), args.content);
+      upsertNote(args.key.slice(0, 60), args.summary.slice(0, 120), args.content);
       return { content: [{ type: 'text' as const, text: `Saved finding "${args.key}" to notes.` }] };
     },
   );

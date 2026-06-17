@@ -57,7 +57,7 @@ identity, Slack, deployment (Docker/k8s/PVC), credential store + progressive acc
 
 ## Phases
 
-### Phase 0 — Substrate + seam  ·  ⬜ not started
+### Phase 0 — Substrate + seam  ·  🔄 in progress
 
 The unlock. Most of the value-at-risk lives here; everything downstream depends on it.
 
@@ -66,8 +66,8 @@ The unlock. Most of the value-at-risk lives here; everything downstream depends 
   - [x] Slice 2 — migrated every outbound `Api` consumer (`RunningView`/`LiveStatus`, `ui`, `permissions`, `concierge`, `dream`) onto `ChatTransport` with `OutgoingMessage`/`Buttons`. grammy now lives only in `telegram.ts` (inbound handlers) and the adapter.
   - [x] Slice 3 — inbound events normalized in the adapter; the dispatcher (`src/dispatch.ts`, replacing `telegram.ts`) is transport-agnostic; grammy is gone from everything but `src/transport/telegram.ts`. **Merged with the concierge-only rebuild:** chat → concierge, reply → momentary worker line; visibility is a per-turn flag (no active slot). Removed `activeSlot`/attach, `/new`/`/pin`/`/auto`/`/close`/`/history`/`/cwd`/`/bot`, the classifier router (`router.ts` deleted), and the concierge `setRouting`/connect-through-switch semantics.
   - _Markup is carried as opaque format-tagged text for now; a cross-platform markup IR is deferred to the Slack adapter (Phase 2), when there's a second consumer to design it against._
-- [ ] **Knowledge → git-tracked files** — migrate the `notes` table into a standalone `knowledge/` git repo: `index.md` (protocol + index) + one `.md` per note-unit (frontmatter + `[[links]]`). Files are source of truth; the digest pipeline writes files; concierge reads them. SQLite stays the firehose.
-- [ ] **Bootstrap protocol** — `prompts/system.md` and a `CLAUDE.md` inside `knowledge/` point every agent at `knowledge/index.md` (the "first agent wakes up → reads index.md → has the KB protocol" path).
+- [x] **Knowledge → git-tracked files** — `src/knowledge.ts` is now the file-backed, git-tracked note store: one `<key>.md` per note (frontmatter + body with `[[links]]`) + a generated `index.md`, in `KNOWLEDGE_DIR` (default `data/knowledge`, its own git repo, auto-commit per write). `chatId` dropped → one shared brain. The 15 legacy SQLite notes migrated on first boot (idempotent); the `notes` table stays only as the migration source. `digest`, `concierge`, and `ui` read/write files now.
+- [x] **Bootstrap protocol** — `index.md` carries the KB protocol (how to read/add notes, the `[[link]]` convention); the bot's agents reach it through the existing `recallNotes`/`readNote`/`writeNote`/`digestSource` tools. _(A `CLAUDE.md` inside the knowledge repo — for when `grow` operates there directly — comes with Phase 1.)_
 - [ ] **`dreams` table** — persist dream output as structured records.
 - [ ] **Session typing** — model `WorkSession` (owns a task/PR/branch, long-lived) vs `QuerySession` (ephemeral, read-only), plus a **rolling recap** auto-updated per turn so many askers read the recap, not the whole thread.
 
@@ -94,6 +94,7 @@ The crown jewel — the part nobody else has. Prove it on ourselves before expos
 
 ## Changelog
 
+- **2026-06-17** — Phase 0 **Knowledge → git-tracked files**: new `src/knowledge.ts` replaces the SQLite `notes` table with a file-backed, git-tracked base — one `<key>.md` per note (frontmatter + `[[links]]`) + a generated protocol-headed `index.md`, in its own git repo under `KNOWLEDGE_DIR` (default `data/knowledge`), auto-committing each write. Dropped `chatId` (one shared brain). 15 legacy notes migrated on first boot (idempotent). `digest`/`concierge`/`ui` now read & write files; SQLite stays the firehose. This is the substrate `dream`-persistence and `grow` stand on.
 - **2026-06-17** — Worker messages now carry a `🔧 <title>` marker (answers, file-op notices, the live-status card, and `send`/`ask`/permission prompts); the concierge stays unmarked as the default voice. Makes "which message is a worker's — and which to reply to" unambiguous, closing the discoverability gap in the reply-to-worker model.
 - **2026-06-17** — Phase 0 transport seam, slice 3/3 + the concierge-only interaction rebuild (one pass): the `TelegramAdapter` now normalizes inbound updates into `message`/`command`/`callback` events and owns the access gate; `telegram.ts` became the transport-agnostic `dispatch.ts`; grammy is confined to `src/transport/telegram.ts`. **Interaction model unified:** the chat always talks to the concierge, workers are background and surface through it, replying to a worker is a momentary direct line, and a turn's visibility is fixed at start (no active/attached thread). Removed `activeSlot`/attach, `/new`/`/pin`/`/auto`/`/close`/`/history`/`/cwd`/`/bot`, the classifier router (`router.ts`), and the concierge's `setRouting` + connect-through-switch. Typecheck green. **Transport seam complete.**
 - **2026-06-17** — `TelegramAdapter` now handles a fatal runner error (e.g. 409 Conflict from a second instance polling the same token) with one clear log line + clean exit, instead of an uncaught-exception stack dump. The stall-watchdog's restart reuses the same handled path.
