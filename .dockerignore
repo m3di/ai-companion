@@ -1,0 +1,15 @@
+# Build context excludes — keep the image lean and free of dev/instance state.
+.git
+.gitignore
+node_modules
+dist
+*.log
+
+# Local config & per-deployment state (mounted/provided at runtime instead)
+.env
+data
+.idea
+
+# Instance-specific knowledge — never bake a deployment's data into the image
+knowledge-map.md
+kb/*.pl

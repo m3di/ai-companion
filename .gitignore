@@ -4,3 +4,8 @@ data/
 *.log
 dist/
 .idea/
+
+# Instance-specific knowledge & data — this is a general framework repo; each
+# deployment keeps its own knowledge locally / on its PVC, never in git.
+knowledge-map.md
+kb/*.pl
