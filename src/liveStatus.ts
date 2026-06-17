@@ -1,18 +1,18 @@
-import type { Context, InlineKeyboard } from 'grammy';
 import { escapeHtml } from './format.js';
+import type { Buttons, ChatTransport, MessageRef } from './transport/types.js';
 
 const EDIT_INTERVAL_MS = 1100;
 const MAX_LOG_LINES = 12;
 
 /**
- * Owns a single Telegram message that is edited in place to reflect the latest
- * state of a turn: a header (current/last action + count) plus an expandable
+ * Owns a single chat message that is edited in place to reflect the latest state
+ * of a turn: a header (current/last action + count) plus an expandable
  * blockquote holding the recent activity log. Edits are throttled so we never
- * trip Telegram's rate limits, and a trailing edit always flushes the final
+ * trip the transport's rate limits, and a trailing edit always flushes the final
  * state.
  */
 export class LiveStatus {
-  private messageId?: number;
+  private ref?: MessageRef;
   private readonly log: string[] = [];
   private header = '🧠 <b>Thinking…</b>';
   private done = false;
@@ -21,20 +21,20 @@ export class LiveStatus {
   private timer?: NodeJS.Timeout;
   private rendering = false;
   private dirty = false;
-  private keyboard?: InlineKeyboard;
+  private keyboard?: Buttons;
 
   constructor(
-    private readonly ctx: Context,
+    private readonly transport: ChatTransport,
     private readonly chatId: number,
   ) {}
 
-  async start(keyboard?: InlineKeyboard): Promise<void> {
+  async start(keyboard?: Buttons): Promise<void> {
     this.keyboard = keyboard;
-    const msg = await this.ctx.reply(this.header, {
-      parse_mode: 'HTML',
-      reply_markup: keyboard,
+    this.ref = await this.transport.send(this.chatId, {
+      text: this.header,
+      format: 'tgHtml',
+      buttons: keyboard,
     });
-    this.messageId = msg.message_id;
   }
 
   /** Add an activity line and refresh the header to point at it. */
@@ -60,7 +60,7 @@ export class LiveStatus {
   }
 
   private schedule(): void {
-    if (this.done || this.messageId === undefined) return;
+    if (this.done || this.ref === undefined) return;
     const wait = Math.max(0, EDIT_INTERVAL_MS - (Date.now() - this.lastEditAt));
     if (wait === 0) {
       void this.render();
@@ -75,19 +75,20 @@ export class LiveStatus {
   }
 
   private async render(): Promise<void> {
-    if (this.messageId === undefined || this.rendering) {
+    if (this.ref === undefined || this.rendering) {
       this.dirty = true;
       return;
     }
     this.rendering = true;
     this.lastEditAt = Date.now();
     try {
-      await this.ctx.api.editMessageText(this.chatId, this.messageId, this.body(), {
-        parse_mode: 'HTML',
-        reply_markup: this.keyboard,
+      // edit() is best-effort: "message is not modified", rate limits, etc. are
+      // swallowed by the transport.
+      await this.transport.edit(this.ref, {
+        text: this.body(),
+        format: 'tgHtml',
+        buttons: this.keyboard,
       });
-    } catch {
-      // "message is not modified", rate limits, etc. — safe to ignore.
     } finally {
       this.rendering = false;
       if (this.dirty && !this.done) {
@@ -98,16 +99,16 @@ export class LiveStatus {
   }
 
   /** Flush a final state. Deletes the message if nothing happened. */
-  async finalize(ok: boolean, keyboard?: InlineKeyboard): Promise<void> {
+  async finalize(ok: boolean, keyboard?: Buttons): Promise<void> {
     this.done = true;
     if (this.timer) {
       clearTimeout(this.timer);
       this.timer = undefined;
     }
-    if (this.messageId === undefined) return;
+    if (this.ref === undefined) return;
 
     if (!this.hasActivity) {
-      await this.ctx.api.deleteMessage(this.chatId, this.messageId).catch(() => {});
+      await this.transport.delete(this.ref);
       return;
     }
 
@@ -116,9 +117,7 @@ export class LiveStatus {
     const text =
       `${this.header}\n<i>${count} action${count === 1 ? '' : 's'}</i>` +
       `\n<blockquote expandable>${this.log.map((l) => escapeHtml(l)).join('\n')}</blockquote>`;
-    await this.ctx.api
-      .editMessageText(this.chatId, this.messageId, text, { parse_mode: 'HTML', reply_markup: keyboard })
-      .catch(() => {});
+    await this.transport.edit(this.ref, { text, format: 'tgHtml', buttons: keyboard });
   }
 
   /** Stop updating and leave the message in a fixed state (used on detach). */
@@ -128,9 +127,7 @@ export class LiveStatus {
       clearTimeout(this.timer);
       this.timer = undefined;
     }
-    if (this.messageId === undefined) return;
-    await this.ctx.api
-      .editMessageText(this.chatId, this.messageId, html, { parse_mode: 'HTML' })
-      .catch(() => {});
+    if (this.ref === undefined) return;
+    await this.transport.edit(this.ref, { text: html, format: 'tgHtml' });
   }
 }

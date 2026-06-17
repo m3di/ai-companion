@@ -1,5 +1,4 @@
 import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk';
-import { InlineKeyboard } from 'grammy';
 import { z } from 'zod';
 import { config } from './config.js';
 import {
@@ -183,7 +182,7 @@ ${notesIndex}`;
 
 /** Build the bot-management MCP server bound to the concierge's live view. */
 export function buildConciergeServer(view: RunningView) {
-  const { api, chatId } = view;
+  const { chatId } = view;
 
   const listThreads = tool(
     'listThreads',
@@ -343,8 +342,16 @@ export function buildConciergeServer(view: RunningView) {
         return { content: [{ type: 'text' as const, text: `No active thread at slot ${args.slot}.` }], isError: true };
       }
       const id = (++cseq).toString(36);
-      const kb = new InlineKeyboard().text('✅ Close', `cfm:${id}:1`).text('Cancel', `cfm:${id}:0`);
-      await api.sendMessage(chatId, `⚠️ Close <b>${escapeHtml(s.title)}</b>?`, { parse_mode: 'HTML', reply_markup: kb });
+      await view.transport.send(chatId, {
+        text: `⚠️ Close <b>${escapeHtml(s.title)}</b>?`,
+        format: 'tgHtml',
+        buttons: [
+          [
+            { text: '✅ Close', data: `cfm:${id}:1` },
+            { text: 'Cancel', data: `cfm:${id}:0` },
+          ],
+        ],
+      });
       const yes = await new Promise<boolean>((resolve) => {
         const timeout = setTimeout(() => {
           pendingConfirm.delete(id);

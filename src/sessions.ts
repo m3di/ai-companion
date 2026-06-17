@@ -1,5 +1,4 @@
-import type { Api, Context } from 'grammy';
-import { InlineKeyboard } from 'grammy';
+import type { Buttons, ChatTransport } from './transport/types.js';
 import {
   countSessions,
   getActiveSlot,
@@ -91,16 +90,21 @@ export function statusMarker(chatId: number, slot: number): string {
   return badge === 'idle' ? '' : badgeIcon(badge);
 }
 
-async function sendAnswer(api: Api, chatId: number, text: string, sessionKey?: string): Promise<void> {
+async function sendAnswer(
+  transport: ChatTransport,
+  chatId: number,
+  text: string,
+  sessionKey?: string,
+): Promise<void> {
   for (const piece of chunkRaw(text)) {
-    let msg;
+    let ref;
     try {
-      msg = await api.sendMessage(chatId, toTelegramMarkdown(piece), { parse_mode: 'MarkdownV2' });
+      ref = await transport.send(chatId, { text: toTelegramMarkdown(piece), format: 'tgMarkdownV2' });
     } catch {
-      msg = await api.sendMessage(chatId, piece);
+      ref = await transport.send(chatId, { text: piece, format: 'plain' });
     }
     // Tag this message so a reply to it routes back to this session.
-    if (sessionKey) recordOutbound(chatId, msg.message_id, sessionKey);
+    if (sessionKey) recordOutbound(chatId, ref.messageId, sessionKey);
   }
 }
 
@@ -116,7 +120,7 @@ export class RunningView {
   private blocked = false;
 
   constructor(
-    private readonly ctx: Context,
+    readonly transport: ChatTransport,
     readonly chatId: number,
     readonly slot: number,
     // Post the final reply even when detached (a background concierge notice).
@@ -131,10 +135,6 @@ export class RunningView {
     return titleOf(this.chatId, this.slot);
   }
 
-  get api(): Api {
-    return this.ctx.api;
-  }
-
   isAttached(): boolean {
     return getActiveSlot(this.chatId) === this.slot;
   }
@@ -147,9 +147,9 @@ export class RunningView {
 
   private startTyping(): void {
     if (this.typing) return;
-    void this.ctx.api.sendChatAction(this.chatId, 'typing').catch(() => {});
+    void this.transport.typing(this.chatId);
     this.typing = setInterval(() => {
-      void this.ctx.api.sendChatAction(this.chatId, 'typing').catch(() => {});
+      void this.transport.typing(this.chatId);
     }, 5000);
   }
 
@@ -164,7 +164,7 @@ export class RunningView {
   private async openLive(): Promise<void> {
     if (this.status) return;
     this.startTyping();
-    this.status = new LiveStatus(this.ctx, this.chatId);
+    this.status = new LiveStatus(this.transport, this.chatId);
     await this.status.start(stopKeyboard());
     this.status.push(this.lastAction, '🧠');
   }
@@ -192,18 +192,19 @@ export class RunningView {
   }
 
   async fileOp(html: string): Promise<void> {
-    if (this.isAttached()) await this.api.sendMessage(this.chatId, html, { parse_mode: 'HTML' }).catch(() => {});
+    if (this.isAttached())
+      await this.transport.send(this.chatId, { text: html, format: 'tgHtml' }).catch(() => {});
   }
 
   async answer(text: string): Promise<void> {
-    if (this.isAttached() || this.forceVisible) await sendAnswer(this.api, this.chatId, text, this.key);
+    if (this.isAttached() || this.forceVisible) await sendAnswer(this.transport, this.chatId, text, this.key);
   }
 
   /** Mark the session blocked on a user interaction (permission / ask). */
   async block(badge: 'needsPerm' | 'asked', notice: string): Promise<void> {
     this.blocked = true;
     setBadge(this.key, badge);
-    if (!this.isAttached()) await notifyBackground(this.api, this.chatId, notice);
+    if (!this.isAttached()) await notifyBackground(this.transport, this.chatId, notice);
   }
 
   unblock(): void {
@@ -221,14 +222,18 @@ export class RunningView {
   }
 }
 
-function stopKeyboard(): InlineKeyboard {
-  return new InlineKeyboard().text('🛑 Stop', 'stop');
+function stopKeyboard(): Buttons {
+  return [[{ text: '🛑 Stop', data: 'stop' }]];
 }
 
 /** Send a one-line background notice (and clear any stale bottom keyboard). */
-export async function notifyBackground(api: Api, chatId: number, html: string): Promise<void> {
-  await api
-    .sendMessage(chatId, html, { parse_mode: 'HTML', reply_markup: { remove_keyboard: true } })
+export async function notifyBackground(
+  transport: ChatTransport,
+  chatId: number,
+  html: string,
+): Promise<void> {
+  await transport
+    .send(chatId, { text: html, format: 'tgHtml', removeKeyboard: true })
     .catch(() => {});
 }
 
@@ -236,7 +241,7 @@ export async function notifyBackground(api: Api, chatId: number, html: string): 
  * Attach a chat to a session: mark it active, replay the last few messages, and
  * if a turn is mid-flight, hand the live view over so it streams from here on.
  */
-export async function attachSession(api: Api, chatId: number, slot: number): Promise<void> {
+export async function attachSession(transport: ChatTransport, chatId: number, slot: number): Promise<void> {
   const prev = activeSlot(chatId);
   if (prev !== slot) await views.get(sessionKey(chatId, prev))?.detach();
 
@@ -260,11 +265,11 @@ export async function attachSession(api: Api, chatId: number, slot: number): Pro
   const head = `📍 ${here} <b>${escapeHtml(title)}</b>${running ? ' · 🟢 running' : ''}`;
   const memo = getMemo(chatId, slot)?.summary;
   const memoLine = memo ? `\n<i>${escapeHtml(memo)}</i>` : '';
-  await api.sendMessage(
-    chatId,
-    `${head}${memoLine}\n<blockquote expandable>${transcript}</blockquote>`,
-    { parse_mode: 'HTML', reply_markup: { remove_keyboard: true } },
-  );
+  await transport.send(chatId, {
+    text: `${head}${memoLine}\n<blockquote expandable>${transcript}</blockquote>`,
+    format: 'tgHtml',
+    removeKeyboard: true,
+  });
 
   if (running) await views.get(sessionKey(chatId, slot))?.attach();
 }

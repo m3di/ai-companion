@@ -1,7 +1,7 @@
-import { InlineKeyboard } from 'grammy';
 import { getPrefs } from './db.js';
 import { describeTool, escapeHtml, SAFE_TOOLS } from './format.js';
 import type { RunningView } from './sessions.js';
+import type { Buttons } from './transport/types.js';
 
 type Decision = 'allow' | 'always' | 'deny';
 type PermissionResult =
@@ -78,11 +78,13 @@ export function createCanUseTool(view: RunningView) {
 
     const id = nextId();
     const { detail, summary } = describeTool(toolName, input);
-    const keyboard = new InlineKeyboard()
-      .text('✅ Allow', `a:${id}`)
-      .text('⛔ Deny', `d:${id}`)
-      .row()
-      .text(`♾️ Always allow ${toolName}`, `A:${id}`);
+    const keyboard: Buttons = [
+      [
+        { text: '✅ Allow', data: `a:${id}` },
+        { text: '⛔ Deny', data: `d:${id}` },
+      ],
+      [{ text: `♾️ Always allow ${toolName}`, data: `A:${id}` }],
+    ];
 
     const shown = detail || summary;
     await view.block(
@@ -90,12 +92,13 @@ export function createCanUseTool(view: RunningView) {
       `❗ <b>${escapeHtml(view.title)}</b> needs permission for <b>${escapeHtml(toolName)}</b> — tap to review.`,
     );
     const prefix = view.isAttached() ? '' : `<b>${escapeHtml(view.title)}</b> · `;
-    const prompt = await view.api.sendMessage(
-      view.chatId,
-      `${prefix}🔐 <b>${escapeHtml(toolName)}</b> wants to run:\n` +
+    const prompt = await view.transport.send(view.chatId, {
+      text:
+        `${prefix}🔐 <b>${escapeHtml(toolName)}</b> wants to run:\n` +
         `<blockquote expandable>${escapeHtml(shown)}</blockquote>`,
-      { parse_mode: 'HTML', reply_markup: keyboard },
-    );
+      format: 'tgHtml',
+      buttons: keyboard,
+    });
 
     const decision = await new Promise<Decision>((resolve) => {
       const timeout = setTimeout(() => {
@@ -122,14 +125,10 @@ export function createCanUseTool(view: RunningView) {
         : decision === 'always'
           ? `♾️ Always allowing ${escapeHtml(toolName)}`
           : '✅ Allowed';
-    await view.api
-      .editMessageText(
-        view.chatId,
-        prompt.message_id,
-        `${verdict} · <b>${escapeHtml(toolName)}</b>`,
-        { parse_mode: 'HTML' },
-      )
-      .catch(() => {});
+    await view.transport.edit(prompt, {
+      text: `${verdict} · <b>${escapeHtml(toolName)}</b>`,
+      format: 'tgHtml',
+    });
 
     if (decision === 'deny') {
       return { behavior: 'deny', message: `User denied ${toolName} via Telegram.` };

@@ -63,6 +63,12 @@ import {
 } from './sessions.js';
 import { buildUiServer, resolveAsk, takeQuickReply } from './ui.js';
 import { addRepos, scanWorkspace, workspaceContext } from './workspace.js';
+import { TelegramAdapter } from './transport/telegram.js';
+
+// The single chat transport for this process, set in createBot(). Top-level
+// turn/routing helpers (which don't carry the grammy Context) reach the chat
+// through this. Inbound ctx-based handlers are ported off grammy in seam slice 3.
+let adapter!: TelegramAdapter;
 
 /** A resolved target: a chat and the session slot a turn should run against. */
 interface Target {
@@ -173,7 +179,7 @@ async function createAndAttach(ctx: Context): Promise<void> {
   const slot = createSession(chatId, 'New session');
   const def = basename(config.workingDir);
   setSessionTitle(chatId, slot, `${def} #${slot + 1}`);
-  await attachSession(ctx.api, chatId, slot);
+  await attachSession(adapter, chatId, slot);
   await askForMode(ctx);
 }
 
@@ -182,7 +188,7 @@ async function switchTo(ctx: Context, slot: number): Promise<void> {
   const chatId = ctx.chat!.id;
   // A manual switch right after an auto-route teaches the router it was wrong.
   noteManualSwitch(chatId, slot);
-  await attachSession(ctx.api, chatId, slot);
+  await attachSession(adapter, chatId, slot);
 }
 
 function sessionListKeyboard(chatId: number, sessions: ChatSession[], prefix: string): InlineKeyboard {
@@ -234,7 +240,7 @@ async function runTurn(ctx: Context, target: Target, text: string, userMsgId?: n
   // A concierge turn running while the user is elsewhere (a completion notice):
   // force its reply to post so the notification isn't swallowed.
   const forceVisible = isControl && activeSlot(target.chatId) !== CONTROL_SLOT;
-  const view = new RunningView(ctx, target.chatId, target.slot, forceVisible);
+  const view = new RunningView(adapter, target.chatId, target.slot, forceVisible);
   await view.begin();
   const canUseTool = createCanUseTool(view);
   const prefs = getPrefs(target.key);
@@ -337,7 +343,7 @@ async function runTurn(ctx: Context, target: Target, text: string, userMsgId?: n
       // Connect through: switch the user into a worker and seed its task.
       const sw = takePendingSwitch(target.chatId);
       if (sw !== undefined) {
-        await attachSession(ctx.api, target.chatId, sw);
+        await attachSession(adapter, target.chatId, sw);
         const seed = takePendingSeed(target.chatId);
         if (seed && seed.slot === sw) {
           await submitTo(ctx, targetForSlot(target.chatId, sw), seed.text);
@@ -469,7 +475,7 @@ async function flushInbox(key: string): Promise<void> {
   // decided it on arrival). Make it the visible thread and run — no classifier.
   if (config.routing === 'address') {
     const slot = Number(key.split(':')[1]);
-    if (activeSlot(chatId) !== slot) await attachSession(buf.ctx.api, chatId, slot).catch(() => {});
+    if (activeSlot(chatId) !== slot) await attachSession(adapter, chatId, slot).catch(() => {});
     await submitTo(buf.ctx, targetForSlot(chatId, slot), text, buf.firstMsgId);
     return;
   }
@@ -583,7 +589,7 @@ async function decideRoute(
   // About the bot itself → the concierge. A wrong control route is cheap (it
   // just answers / confirms), so we don't gate it on confidence.
   if (route.target === 'control') {
-    if (active.slot !== CONTROL_SLOT) await attachSession(ctx.api, chatId, CONTROL_SLOT);
+    if (active.slot !== CONTROL_SLOT) await attachSession(adapter, chatId, CONTROL_SLOT);
     return targetForSlot(chatId, CONTROL_SLOT);
   }
   if (route.confidence === 'low') {
@@ -594,13 +600,13 @@ async function decideRoute(
   if (route.target === 'new') {
     const slot = createSession(chatId, 'New thread');
     setSessionTitle(chatId, slot, `${basename(config.workingDir)} #${slot + 1}`);
-    await attachSession(ctx.api, chatId, slot);
+    await attachSession(adapter, chatId, slot);
     logRoute(chatId, text, slot, titleOf(chatId, slot));
     return targetForSlot(chatId, slot);
   }
 
   if (route.target !== active.slot) {
-    await attachSession(ctx.api, chatId, route.target);
+    await attachSession(adapter, chatId, route.target);
     const reason = route.reason ? ` · <i>${escapeHtml(route.reason)}</i>` : '';
     await ctx.reply(`🧭 → <b>${escapeHtml(titleOf(chatId, route.target))}</b>${reason}`, {
       parse_mode: 'HTML',
@@ -634,8 +640,9 @@ function askRoute(
   return null;
 }
 
-export function createBot(): Bot {
+export function createBot(): TelegramAdapter {
   const bot = new Bot(config.telegramToken);
+  adapter = new TelegramAdapter(bot);
 
   // Access control: only allow-listed chats may drive Claude Code.
   bot.use(async (ctx, next) => {
@@ -691,7 +698,7 @@ export function createBot(): Bot {
     });
     const remaining = listSessions(chatId, 'active');
     if (remaining.length > 0) {
-      await attachSession(ctx.api, chatId, remaining[0]!.slot);
+      await attachSession(adapter, chatId, remaining[0]!.slot);
     } else {
       await createAndAttach(ctx);
     }
@@ -820,7 +827,7 @@ export function createBot(): Bot {
         'First present a short fan-out PLAN — fragment(s) → destination (an existing thread by title / a new thread / shared memory / a note) — with a tappable confirm, and only dispatch after I confirm. ' +
         'Then fan out: dispatchTask to each target thread (you can dispatch several in one turn), update memos, and fold standing facts into shared memory or notes. ' +
         "Cluster related fragments. Flag anything ambiguous instead of guessing, and park whatever needs my input for when I'm back.";
-      await attachSession(ctx.api, chatId, CONTROL_SLOT);
+      await attachSession(adapter, chatId, CONTROL_SLOT);
       await submitTo(ctx, targetForSlot(chatId, CONTROL_SLOT), prompt);
     }
   });
@@ -828,7 +835,7 @@ export function createBot(): Bot {
   bot.command('dream', async (ctx) => {
     const chatId = ctx.chat!.id;
     await ctx.reply('🌙 Dreaming — reviewing recent activity and the code. This takes a couple of minutes…');
-    void runDream(ctx.api, chatId);
+    void runDream(adapter, chatId);
   });
 
   bot.command('repos', async (ctx) => {
@@ -907,7 +914,7 @@ export function createBot(): Bot {
       const slot = Number(data.slice('reopen:'.length));
       setSessionStatus(chatId, slot, 'active');
       await ctx.answerCallbackQuery('Reopened');
-      await attachSession(ctx.api, chatId, slot);
+      await attachSession(adapter, chatId, slot);
       return;
     }
 
@@ -951,11 +958,11 @@ export function createBot(): Bot {
       if (sel === 'new') {
         const slot = createSession(chatId, 'New thread');
         setSessionTitle(chatId, slot, `${basename(config.workingDir)} #${slot + 1}`);
-        await attachSession(ctx.api, chatId, slot);
+        await attachSession(adapter, chatId, slot);
         routed = targetForSlot(chatId, slot);
       } else {
         const slot = Number(sel);
-        await attachSession(ctx.api, chatId, slot);
+        await attachSession(adapter, chatId, slot);
         routed = targetForSlot(chatId, slot);
       }
       await ctx
@@ -1067,5 +1074,5 @@ export function createBot(): Bot {
 
   bot.catch((err) => console.error('[bot] error', err));
 
-  return bot;
+  return adapter;
 }

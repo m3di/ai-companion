@@ -1,6 +1,6 @@
 import { query } from '@anthropic-ai/claude-agent-sdk';
-import type { Api } from 'grammy';
 import { config } from './config.js';
+import type { ChatTransport } from './transport/types.js';
 import {
   chatTimeline,
   getMemo,
@@ -60,7 +60,7 @@ function buildDigest(chatId: number): string {
 }
 
 /** Run a dry-run dreaming pass and post the report to the chat. Read-only. */
-export async function runDream(api: Api, chatId: number): Promise<void> {
+export async function runDream(transport: ChatTransport, chatId: number): Promise<void> {
   const digest = buildDigest(chatId);
   const prompt = `Digest of recent activity:\n\n${digest}\n\nThe bot's own TypeScript source is in ./src and its SQLite database is at data/companion.db (binary — use the digest above for data; read the code for code proposals). You have read-only tools (Read/Grep/Glob). Produce your dream report now.`;
 
@@ -88,14 +88,15 @@ export async function runDream(api: Api, chatId: number): Promise<void> {
     report = `(dream failed: ${e instanceof Error ? e.message : String(e)})`;
   }
 
-  await api
-    .sendMessage(chatId, '🌙 <b>Dream report</b> — reflections on recent activity (dry-run, nothing changed):', {
-      parse_mode: 'HTML',
+  await transport
+    .send(chatId, {
+      text: '🌙 <b>Dream report</b> — reflections on recent activity (dry-run, nothing changed):',
+      format: 'tgHtml',
     })
     .catch(() => {});
   for (const piece of chunkRaw(report.trim() || '(the dream produced nothing)')) {
-    await api
-      .sendMessage(chatId, toTelegramMarkdown(piece), { parse_mode: 'MarkdownV2' })
-      .catch(() => api.sendMessage(chatId, piece).catch(() => {}));
+    await transport
+      .send(chatId, { text: toTelegramMarkdown(piece), format: 'tgMarkdownV2' })
+      .catch(() => transport.send(chatId, { text: piece, format: 'plain' }).catch(() => {}));
   }
 }

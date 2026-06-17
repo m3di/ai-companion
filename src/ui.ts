@@ -1,9 +1,9 @@
 import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk';
-import { InlineKeyboard } from 'grammy';
 import { z } from 'zod';
 import { getNote, listNotes, recordOutbound, setMemo, upsertNote } from './db.js';
 import { escapeHtml } from './format.js';
 import type { RunningView } from './sessions.js';
+import type { Buttons } from './transport/types.js';
 
 interface AskEntry {
   resolve: (choice: string) => void;
@@ -57,7 +57,7 @@ Rules:
 
 /** Build the per-session Telegram UI tool server passed into a query(). */
 export function buildUiServer(view: RunningView) {
-  const { api, chatId } = view;
+  const { chatId } = view;
   const send = tool(
     'send',
     "Send a richly formatted Telegram message (raw Telegram HTML) with optional inline buttons. Use when prose can't express the layout you want.",
@@ -84,29 +84,29 @@ export function buildUiServer(view: RunningView) {
         .describe('Rows of inline buttons; each button is a URL link or a quick-reply'),
     },
     async (args) => {
-      const keyboard = new InlineKeyboard();
-      let hasButtons = false;
+      const buttons: Buttons = [];
       for (const row of args.buttons ?? []) {
+        const r: Buttons[number] = [];
         for (const b of row) {
-          hasButtons = true;
-          if (b.url) keyboard.url(b.text, b.url);
+          if (b.url) r.push({ text: b.text, url: b.url });
           else if (b.reply) {
             const id = nextId();
             quickReplies.set(id, { text: b.reply, key: view.key });
-            keyboard.text(b.text, `qr:${id}`);
+            r.push({ text: b.text, data: `qr:${id}` });
           } else {
-            keyboard.text(b.text, 'noop');
+            r.push({ text: b.text, data: 'noop' });
           }
         }
-        keyboard.row();
+        buttons.push(r);
       }
       const prefix = view.isAttached() ? '' : `<b>${escapeHtml(view.title)}</b> · `;
       try {
-        const msg = await api.sendMessage(chatId, `${prefix}${args.html}`, {
-          parse_mode: 'HTML',
-          ...(hasButtons ? { reply_markup: keyboard } : {}),
+        const ref = await view.transport.send(chatId, {
+          text: `${prefix}${args.html}`,
+          format: 'tgHtml',
+          buttons: buttons.length ? buttons : undefined,
         });
-        recordOutbound(chatId, msg.message_id, view.key);
+        recordOutbound(chatId, ref.messageId, view.key);
         return { content: [{ type: 'text' as const, text: 'Message delivered.' }] };
       } catch (e) {
         const m = e instanceof Error ? e.message : String(e);
@@ -122,18 +122,18 @@ export function buildUiServer(view: RunningView) {
   // block until the user picks. `body` is extra HTML shown under the question.
   const askOne = async (question: string, optionLabels: string[], body = ''): Promise<string> => {
     const id = nextId();
-    const keyboard = new InlineKeyboard();
+    const buttons: Buttons = [];
     optionLabels.forEach((opt, i) => {
-      keyboard.text(opt.slice(0, 64), `ask:${id}:${i}`);
-      if (i % 2 === 1) keyboard.row();
+      if (i % 2 === 0) buttons.push([]);
+      buttons[buttons.length - 1]!.push({ text: opt.slice(0, 64), data: `ask:${id}:${i}` });
     });
     const prefix = view.isAttached() ? '' : `<b>${escapeHtml(view.title)}</b> · `;
-    const msg = await api.sendMessage(
-      chatId,
-      `${prefix}❓ <b>${escapeHtml(question)}</b>${body}`,
-      { parse_mode: 'HTML', reply_markup: keyboard },
-    );
-    recordOutbound(chatId, msg.message_id, view.key);
+    const ref = await view.transport.send(chatId, {
+      text: `${prefix}❓ <b>${escapeHtml(question)}</b>${body}`,
+      format: 'tgHtml',
+      buttons,
+    });
+    recordOutbound(chatId, ref.messageId, view.key);
     return new Promise<string>((resolve) => {
       const timeout = setTimeout(() => {
         askPending.delete(id);
@@ -146,7 +146,7 @@ export function buildUiServer(view: RunningView) {
         },
         options: optionLabels,
         question,
-        messageId: msg.message_id,
+        messageId: ref.messageId,
       });
     });
   };
