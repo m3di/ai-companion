@@ -60,7 +60,11 @@ identity, Slack, deployment (Docker/k8s/PVC), credential store + progressive acc
 
 The unlock. Most of the value-at-risk lives here; everything downstream depends on it.
 
-- [ ] **Transport seam** — extract a `ChatAdapter` interface (`sendMessage`, `editMessage`, buttons, reactions, update loop) from `telegram.ts`; Telegram becomes `TelegramAdapter`. Core talks only to the interface.
+- [ ] **Transport seam** — extract a `ChatAdapter` interface (`sendMessage`, `editMessage`, buttons, reactions, update loop) from `telegram.ts`; Telegram becomes `TelegramAdapter`. Core talks only to the interface. _In progress — staged in 3 slices:_
+  - [x] Slice 1 — `ChatAdapter`/`ChatTransport` contract (`src/transport/types.ts`) + `TelegramAdapter` owning the grammy lifecycle (runner, stall-watchdog, command menu, boot); `index.ts` is now transport-agnostic.
+  - [ ] Slice 2 — migrate outbound `Api` consumers (`RunningView`, `ui`, `permissions`, `dream`, `concierge`) onto the transport; drop their grammy imports.
+  - [ ] Slice 3 — normalize inbound events; port `telegram.ts` handlers off grammy `Context`; delete the `createBot` grammy island.
+  - _Markup is carried as opaque format-tagged text for now; a cross-platform markup IR is deferred to the Slack adapter (Phase 2), when there's a second consumer to design it against._
 - [ ] **Knowledge → git-tracked files** — migrate the `notes` table into a standalone `knowledge/` git repo: `index.md` (protocol + index) + one `.md` per note-unit (frontmatter + `[[links]]`). Files are source of truth; the digest pipeline writes files; concierge reads them. SQLite stays the firehose.
 - [ ] **Bootstrap protocol** — `prompts/system.md` and a `CLAUDE.md` inside `knowledge/` point every agent at `knowledge/index.md` (the "first agent wakes up → reads index.md → has the KB protocol" path).
 - [ ] **`dreams` table** — persist dream output as structured records.
@@ -89,4 +93,5 @@ The crown jewel — the part nobody else has. Prove it on ourselves before expos
 
 ## Changelog
 
+- **2026-06-17** — Phase 0 transport seam, slice 1/3: added the `ChatAdapter` contract (`src/transport/types.ts`) and `TelegramAdapter` (`src/transport/telegram.ts`) owning the grammy runner, watchdog, command menu, and outbound API; `index.ts` now constructs the adapter and is transport-agnostic. Handler wiring still grammy-native (slices 2–3).
 - **2026-06-17** — Roadmap created. Captured the flywheel model, the three load-bearing decisions, and Phases 0–3.

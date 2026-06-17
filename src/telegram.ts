@@ -1,6 +1,5 @@
 import { basename, resolve } from 'node:path';
 import { homedir } from 'node:os';
-import { autoRetry } from '@grammyjs/auto-retry';
 import { getSessionInfo } from '@anthropic-ai/claude-agent-sdk';
 import { Bot, type Context, InlineKeyboard } from 'grammy';
 import { config, type PermissionMode } from './config.js';
@@ -637,7 +636,6 @@ function askRoute(
 
 export function createBot(): Bot {
   const bot = new Bot(config.telegramToken);
-  bot.api.config.use(autoRetry());
 
   // Access control: only allow-listed chats may drive Claude Code.
   bot.use(async (ctx, next) => {
