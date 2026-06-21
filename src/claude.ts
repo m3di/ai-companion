@@ -3,11 +3,47 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 import { config, type PermissionMode } from './config.js';
 import { stripLoneSurrogates } from './format.js';
 
+/** Per-turn usage/cost, distilled from the SDK's result message. */
+export interface TurnUsage {
+  /** Model(s) used this turn (comma-joined; usually one). */
+  model: string;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+  costUsd: number;
+  durationMs: number;
+  numTurns: number;
+  /** The primary model's context-window size (max), for reference. */
+  contextWindow: number;
+}
+
 export type ClaudeEvent =
   | { kind: 'session'; sessionId: string }
   | { kind: 'text'; text: string }
   | { kind: 'tool'; name: string; input: Record<string, unknown> }
-  | { kind: 'result'; ok: boolean; error?: string };
+  | { kind: 'result'; ok: boolean; error?: string; usage?: TurnUsage };
+
+/** Build a TurnUsage from a result message's modelUsage map (or null if absent). */
+function extractUsage(msg: any): TurnUsage | undefined {
+  const modelUsage = msg?.modelUsage as Record<string, any> | undefined;
+  if (!modelUsage || Object.keys(modelUsage).length === 0) return undefined;
+  const entries = Object.entries(modelUsage);
+  const sum = (f: string) => entries.reduce((n, [, u]) => n + (Number(u?.[f]) || 0), 0);
+  // Primary model = the one that produced the most output tokens.
+  const primary = entries.reduce((a, b) => ((b[1]?.outputTokens ?? 0) > (a[1]?.outputTokens ?? 0) ? b : a));
+  return {
+    model: entries.map(([m]) => m).join(','),
+    inputTokens: sum('inputTokens'),
+    outputTokens: sum('outputTokens'),
+    cacheReadTokens: sum('cacheReadInputTokens'),
+    cacheCreationTokens: sum('cacheCreationInputTokens'),
+    costUsd: Number(msg?.total_cost_usd) || sum('costUSD'),
+    durationMs: Number(msg?.duration_ms) || 0,
+    numTurns: Number(msg?.num_turns) || 0,
+    contextWindow: Number(primary?.[1]?.contextWindow) || 0,
+  };
+}
 
 type CanUseTool = (
   toolName: string,
@@ -90,6 +126,7 @@ export async function* askClaude(opts: {
         kind: 'result',
         ok: msg.subtype === 'success',
         error: msg.subtype === 'success' ? undefined : String(msg.subtype),
+        usage: extractUsage(msg),
       };
       if (msg.session_id) yield { kind: 'session', sessionId: msg.session_id };
     }

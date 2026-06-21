@@ -161,6 +161,26 @@ db.exec(`
     changes    TEXT NOT NULL DEFAULT '[]',
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
+
+  -- Per-turn usage/cost, captured from the SDK result message (model, tokens,
+  -- cost, latency). One row per completed turn. input_tokens of the latest turn
+  -- ≈ how much context that turn carried — the closest proxy to "current context
+  -- length" for a session.
+  CREATE TABLE IF NOT EXISTS usage (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_key     TEXT NOT NULL,
+    model           TEXT NOT NULL DEFAULT '',
+    input_tokens    INTEGER NOT NULL DEFAULT 0,
+    output_tokens   INTEGER NOT NULL DEFAULT 0,
+    cache_read      INTEGER NOT NULL DEFAULT 0,
+    cache_creation  INTEGER NOT NULL DEFAULT 0,
+    cost_usd        REAL NOT NULL DEFAULT 0,
+    duration_ms     INTEGER NOT NULL DEFAULT 0,
+    num_turns       INTEGER NOT NULL DEFAULT 0,
+    context_window  INTEGER NOT NULL DEFAULT 0,
+    created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_usage_session ON usage(session_key);
 `);
 
 // Each thread keeps a durable "memo": a short summary of what it's about and
@@ -349,6 +369,17 @@ const stmts = {
   ),
   recentGrows: db.prepare<[number, number]>(
     'SELECT id, summary, changes, created_at FROM grows WHERE chat_id = ? ORDER BY id DESC LIMIT ?',
+  ),
+  saveUsage: db.prepare<
+    [string, string, number, number, number, number, number, number, number, number]
+  >(`
+    INSERT INTO usage (session_key, model, input_tokens, output_tokens, cache_read,
+      cache_creation, cost_usd, duration_ms, num_turns, context_window)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `),
+  // The most recent turn's input tokens ≈ the session's current context size.
+  latestContext: db.prepare<[string]>(
+    'SELECT input_tokens FROM usage WHERE session_key = ? ORDER BY id DESC LIMIT 1',
   ),
 };
 
@@ -696,4 +727,75 @@ export function saveGrow(chatId: number, summary: string, changes: string): numb
 /** Recent grow passes for a chat, newest-first. */
 export function recentGrows(chatId: number, limit = 10): GrowRecord[] {
   return stmts.recentGrows.all(chatId, limit) as GrowRecord[];
+}
+
+export interface TurnUsageRow {
+  model: string;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+  costUsd: number;
+  durationMs: number;
+  numTurns: number;
+  contextWindow: number;
+}
+
+/** Record one completed turn's usage/cost. */
+export function saveUsage(sessionKey: string, u: TurnUsageRow): void {
+  stmts.saveUsage.run(
+    sessionKey,
+    u.model,
+    u.inputTokens,
+    u.outputTokens,
+    u.cacheReadTokens,
+    u.cacheCreationTokens,
+    u.costUsd,
+    u.durationMs,
+    u.numTurns,
+    u.contextWindow,
+  );
+}
+
+/** The latest turn's input tokens for a session (≈ its current context size). */
+export function latestContextTokens(sessionKey: string): number | undefined {
+  const row = stmts.latestContext.get(sessionKey) as { input_tokens: number } | undefined;
+  return row?.input_tokens;
+}
+
+export interface UsageSummary {
+  turns: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  costUsd: number;
+  models: string[];
+}
+
+/** Aggregate usage across a chat (optionally a single session). Ad-hoc query. */
+export function usageSummary(chatId: number, sessionKey?: string): UsageSummary {
+  const like = `${chatId}:%`;
+  const where = sessionKey ? 'session_key = ?' : 'session_key LIKE ?';
+  const arg = sessionKey ?? like;
+  const agg = db
+    .prepare(
+      `SELECT COUNT(*) AS turns, COALESCE(SUM(input_tokens),0) AS i,
+              COALESCE(SUM(output_tokens),0) AS o, COALESCE(SUM(cache_read),0) AS cr,
+              COALESCE(SUM(cost_usd),0) AS cost
+       FROM usage WHERE ${where}`,
+    )
+    .get(arg) as { turns: number; i: number; o: number; cr: number; cost: number };
+  const models = (
+    db
+      .prepare(`SELECT DISTINCT model FROM usage WHERE ${where} AND model <> ''`)
+      .all(arg) as Array<{ model: string }>
+  ).map((r) => r.model);
+  return {
+    turns: agg.turns,
+    inputTokens: agg.i,
+    outputTokens: agg.o,
+    cacheReadTokens: agg.cr,
+    costUsd: agg.cost,
+    models,
+  };
 }

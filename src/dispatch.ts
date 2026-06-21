@@ -27,6 +27,7 @@ import {
   sessionForMessage,
   sessionKey,
   setCapturing,
+  saveUsage,
   setRecap,
   setSessionId,
 } from './db.js';
@@ -203,6 +204,7 @@ async function runTurn(
           break;
         case 'result':
           ok = ev.ok;
+          if (ev.usage) saveUsage(key, ev.usage);
           if (!ev.ok && visible) {
             await adapter.send(chatId, { text: `⚠️ Run ended: ${ev.error ?? 'unknown error'}`, format: 'plain' });
           }
