@@ -10,7 +10,7 @@ import {
   recentCorrections,
   saveDream,
 } from './db.js';
-import { chunkRaw, toTelegramMarkdown } from './format.js';
+import { chunkRaw, stripLoneSurrogates, toTelegramMarkdown } from './format.js';
 
 /**
  * "Dreaming" — an offline self-reflection pass. While the user is away, the bot
@@ -62,7 +62,9 @@ function buildDigest(chatId: number): string {
 
 /** Run a dry-run dreaming pass and post the report to the chat. Read-only. */
 export async function runDream(transport: ChatTransport, chatId: number): Promise<void> {
-  const digest = buildDigest(chatId);
+  // Slicing message content (below) can split an emoji's surrogate pair; a lone
+  // surrogate makes the request body invalid JSON, so strip them before sending.
+  const digest = stripLoneSurrogates(buildDigest(chatId));
   const prompt = `Digest of recent activity:\n\n${digest}\n\nThe bot's own TypeScript source is in ./src and its SQLite database is at data/companion.db (binary — use the digest above for data; read the code for code proposals). You have read-only tools (Read/Grep/Glob). Produce your dream report now.`;
 
   let report = '';

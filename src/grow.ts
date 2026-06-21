@@ -1,7 +1,7 @@
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { config } from './config.js';
 import { markDreamProcessed, pendingDreams, saveGrow } from './db.js';
-import { chunkRaw, toTelegramMarkdown } from './format.js';
+import { chunkRaw, stripLoneSurrogates, toTelegramMarkdown } from './format.js';
 import { knowledgePath, rebuildIndex, snapshotNotes } from './knowledge.js';
 import type { ChatTransport } from './transport/types.js';
 
@@ -54,10 +54,11 @@ export async function runGrow(transport: ChatTransport, chatId: number): Promise
   const dreamBlock = dreams.length
     ? dreams.map((d) => `### Dream ${d.id} — ${d.created_at}\n${d.report}`).join('\n\n')
     : '(no new dream reflections since the last grow — do a light audit pass only)';
-  const prompt =
+  const prompt = stripLoneSurrogates(
     `Recent dream reflections to act on:\n\n${dreamBlock}\n\n` +
-    `The knowledge base is your working directory: \`index.md\` (auto-generated — do NOT edit) plus one \`<key>.md\` per note. ` +
-    `Survey it, then refine it per your instructions. End with the CHANGE SUMMARY.`;
+      `The knowledge base is your working directory: \`index.md\` (auto-generated — do NOT edit) plus one \`<key>.md\` per note. ` +
+      `Survey it, then refine it per your instructions. End with the CHANGE SUMMARY.`,
+  );
 
   const before = snapshotNotes();
   let report = '';

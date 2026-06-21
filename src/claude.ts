@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { config, type PermissionMode } from './config.js';
+import { stripLoneSurrogates } from './format.js';
 
 export type ClaudeEvent =
   | { kind: 'session'; sessionId: string }
@@ -44,12 +45,15 @@ export async function* askClaude(opts: {
   // the Claude Code preset so it runs lean and focused on bot management.
   concierge?: { systemPrompt: string; allowedTools: string[] };
 }): AsyncGenerator<ClaudeEvent> {
-  const append =
+  const append = stripLoneSurrogates(
     readSystemPrompt() +
-    (opts.appendContext ? `\n\n## Shared memory (applies across all threads)\n${opts.appendContext}` : '');
+      (opts.appendContext ? `\n\n## Shared memory (applies across all threads)\n${opts.appendContext}` : ''),
+  );
 
   const stream = query({
-    prompt: opts.prompt,
+    // Guard against a lone UTF-16 surrogate (e.g. from a sliced emoji in the
+    // assembled context) making the request body invalid JSON.
+    prompt: stripLoneSurrogates(opts.prompt),
     options: {
       resume: opts.resume,
       cwd: opts.cwd ?? config.workingDir,

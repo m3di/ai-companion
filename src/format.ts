@@ -24,6 +24,21 @@ export function escapeHtml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
+/**
+ * Drop unpaired UTF-16 surrogates. Slicing message content at a fixed length
+ * (e.g. `.slice(0, 260)`) can cut an emoji's surrogate pair in half, leaving a
+ * lone surrogate; that can't be encoded as valid JSON, so the API rejects the
+ * whole request ("no low surrogate in string"). Strip any high surrogate not
+ * followed by a low one, and any low surrogate not preceded by a high one. Apply
+ * to any prompt assembled from stored/sliced content before sending it.
+ */
+export function stripLoneSurrogates(s: string): string {
+  return s.replace(
+    /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g,
+    '',
+  );
+}
+
 function firstLine(s: unknown, max = 64): string {
   const text = String(s ?? '').replace(/\s+/g, ' ').trim();
   return text.length > max ? text.slice(0, max - 1) + '…' : text;

@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { config } from './config.js';
+import { stripLoneSurrogates } from './format.js';
 import { listNotes, upsertNote } from './knowledge.js';
 
 /**
@@ -60,9 +61,10 @@ export async function digestFile(path: string, instructions?: string): Promise<D
   const existingBlock = existing.length
     ? `Existing notes (reuse keys to update; don't duplicate):\n${existing.map((n) => `- ${n.key}: ${n.summary}`).join('\n')}\n\n`
     : '';
-  const prompt =
+  const prompt = stripLoneSurrogates(
     `${instructions ? `Focus / how to digest: ${instructions}\n\n` : ''}${existingBlock}` +
-    `Source document:\n\n${source.slice(0, 80000)}`;
+      `Source document:\n\n${source.slice(0, 80000)}`,
+  );
 
   let text = '';
   try {
