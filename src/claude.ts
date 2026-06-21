@@ -25,7 +25,7 @@ export type ClaudeEvent =
   | { kind: 'result'; ok: boolean; error?: string; usage?: TurnUsage };
 
 /** Build a TurnUsage from a result message's modelUsage map (or null if absent). */
-function extractUsage(msg: any): TurnUsage | undefined {
+export function extractUsage(msg: any): TurnUsage | undefined {
   const modelUsage = msg?.modelUsage as Record<string, any> | undefined;
   if (!modelUsage || Object.keys(modelUsage).length === 0) return undefined;
   const entries = Object.entries(modelUsage);

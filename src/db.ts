@@ -799,3 +799,66 @@ export function usageSummary(chatId: number, sessionKey?: string): UsageSummary 
     models,
   };
 }
+
+export interface StatsRollup {
+  total: { turns: number; inputTokens: number; outputTokens: number; costUsd: number; costToday: number };
+  byArea: Array<{ area: string; runs: number; costUsd: number }>;
+  topSessions: Array<{ slot: number; costUsd: number; turns: number }>;
+  models: string[];
+}
+
+// Classify a usage row's session_key suffix into a display area. Workers (slot
+// 0+) collapse into one bucket; the concierge (-1) and the named system passes
+// (dream/grow/digest) each get their own.
+const AREA_CASE = `CASE substr(session_key, instr(session_key, ':') + 1)
+    WHEN '-1' THEN 'Concierge'
+    WHEN 'dream' THEN 'Dream'
+    WHEN 'grow' THEN 'Grow'
+    WHEN 'digest' THEN 'Digest'
+    ELSE 'Workers' END`;
+
+/** The full /stats rollup for a chat: totals, per-area, top sessions, models. */
+export function statsRollup(chatId: number): StatsRollup {
+  const like = `${chatId}:%`;
+  const total = db
+    .prepare(
+      `SELECT COUNT(*) AS turns, COALESCE(SUM(input_tokens),0) AS i,
+              COALESCE(SUM(output_tokens),0) AS o, COALESCE(SUM(cost_usd),0) AS cost,
+              COALESCE(SUM(CASE WHEN date(created_at,'localtime')=date('now','localtime')
+                                THEN cost_usd ELSE 0 END),0) AS today
+       FROM usage WHERE session_key LIKE ?`,
+    )
+    .get(like) as { turns: number; i: number; o: number; cost: number; today: number };
+
+  const byArea = db
+    .prepare(
+      `SELECT ${AREA_CASE} AS area, COUNT(*) AS runs, COALESCE(SUM(cost_usd),0) AS cost
+       FROM usage WHERE session_key LIKE ? GROUP BY area ORDER BY cost DESC`,
+    )
+    .all(like) as Array<{ area: string; runs: number; cost: number }>;
+
+  // Top worker sessions by cost (numeric slot ≥ 0 only).
+  const topSessions = db
+    .prepare(
+      `SELECT CAST(substr(session_key, instr(session_key, ':') + 1) AS INTEGER) AS slot,
+              COALESCE(SUM(cost_usd),0) AS cost, COUNT(*) AS turns
+       FROM usage
+       WHERE session_key LIKE ?
+         AND substr(session_key, instr(session_key, ':') + 1) GLOB '[0-9]*'
+       GROUP BY session_key ORDER BY cost DESC LIMIT 5`,
+    )
+    .all(like) as Array<{ slot: number; cost: number; turns: number }>;
+
+  const models = (
+    db
+      .prepare(`SELECT DISTINCT model FROM usage WHERE session_key LIKE ? AND model <> ''`)
+      .all(like) as Array<{ model: string }>
+  ).map((r) => r.model);
+
+  return {
+    total: { turns: total.turns, inputTokens: total.i, outputTokens: total.o, costUsd: total.cost, costToday: total.today },
+    byArea: byArea.map((a) => ({ area: a.area, runs: a.runs, costUsd: a.cost })),
+    topSessions: topSessions.map((s) => ({ slot: s.slot, costUsd: s.cost, turns: s.turns })),
+    models,
+  };
+}

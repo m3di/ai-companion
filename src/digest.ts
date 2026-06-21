@@ -1,6 +1,8 @@
 import { readFileSync } from 'node:fs';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { config } from './config.js';
+import { extractUsage } from './claude.js';
+import { saveUsage } from './db.js';
 import { stripLoneSurrogates } from './format.js';
 import { listNotes, upsertNote } from './knowledge.js';
 
@@ -49,7 +51,11 @@ function parseNotes(text: string): Array<{ key: string; summary: string; content
 }
 
 /** Digest a file at `path` into notes. Returns the keys written, or an error. */
-export async function digestFile(path: string, instructions?: string): Promise<DigestResult> {
+export async function digestFile(
+  chatId: number,
+  path: string,
+  instructions?: string,
+): Promise<DigestResult> {
   let source: string;
   try {
     source = readFileSync(path, 'utf8');
@@ -82,6 +88,9 @@ export async function digestFile(path: string, instructions?: string): Promise<D
         for (const b of m.message?.content ?? []) {
           if (b.type === 'text' && b.text) text += b.text;
         }
+      } else if (m.type === 'result') {
+        const usage = extractUsage(m);
+        if (usage) saveUsage(`${chatId}:digest`, usage);
       }
     }
   } catch (e) {

@@ -377,7 +377,7 @@ export function buildConciergeServer(view: RunningView) {
     'Read a file and digest it into the knowledge base as compact note units (merging with existing notes). Use to onboard a document (e.g. a knowledge map) into memory so it can be skimmed efficiently later.',
     { path: z.string().describe('Absolute path to the file to digest'), instructions: z.string().optional().describe('Optional: how to focus the digest') },
     async (args) => {
-      const res = await digestFile(args.path, args.instructions);
+      const res = await digestFile(chatId, args.path, args.instructions);
       if (res.error) return { content: [{ type: 'text' as const, text: `Digest failed: ${res.error}` }], isError: true };
       return { content: [{ type: 'text' as const, text: `Digested into ${res.keys.length} notes: ${res.keys.join(', ')}` }] };
     },

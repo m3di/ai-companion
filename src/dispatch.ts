@@ -23,6 +23,7 @@ import {
   recentDreams,
   recentGrows,
   recentMessages,
+  statsRollup,
   refreshAutoTitle,
   sessionForMessage,
   sessionKey,
@@ -500,6 +501,10 @@ async function handleCommand(e: InboundCommand): Promise<void> {
       return;
     }
 
+    case 'stats':
+      await handleStats(chatId);
+      return;
+
     case 'reset':
       clearSession(sessionKey(chatId, CONTROL_SLOT));
       conciergeTurns.set(chatId, 0);
@@ -562,7 +567,7 @@ async function handleCommand(e: InboundCommand): Promise<void> {
         return;
       }
       await adapter.send(chatId, { text: `📥 Digesting ${args} into notes…`, format: 'plain' });
-      const res = await digestFile(expandPath(args));
+      const res = await digestFile(chatId, expandPath(args));
       await adapter.send(chatId, {
         text: res.error ? `⚠️ ${res.error}` : `✅ Digested into ${res.keys.length} notes:\n${res.keys.join('\n')}`,
         format: 'plain',
@@ -756,6 +761,55 @@ async function handleGrows(chatId: number, arg: string): Promise<void> {
   await adapter.send(chatId, {
     text: `🌱 Recent grow passes (/grows <id> for the full log):\n${lines.join('\n')}`,
     format: 'plain',
+  });
+}
+
+/** Format a token count compactly: 1234 → 1.2K, 4200000 → 4.2M. */
+function fmtTok(n: number): string {
+  if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M`;
+  if (n >= 1e3) return `${(n / 1e3).toFixed(1)}K`;
+  return String(n);
+}
+
+const AREA_ICON: Record<string, string> = {
+  Workers: '🔧',
+  Concierge: '🎛️',
+  Dream: '💤',
+  Grow: '🌱',
+  Digest: '📥',
+};
+
+/** The /stats rollup: usage/cost across workers, concierge, and the flywheel. */
+async function handleStats(chatId: number): Promise<void> {
+  const s = statsRollup(chatId);
+  if (s.total.turns === 0) {
+    await adapter.send(chatId, {
+      text: 'No usage recorded yet. Stats accrue as the bot runs turns (captured from each run).',
+      format: 'plain',
+    });
+    return;
+  }
+  const cost = (n: number) => `$${n.toFixed(2)}`;
+  const head =
+    `📊 <b>Stats</b> · all-time (${cost(s.total.costToday)} today)\n` +
+    `${s.total.turns} runs · ${fmtTok(s.total.inputTokens)} in / ${fmtTok(s.total.outputTokens)} out · <b>${cost(s.total.costUsd)}</b>`;
+
+  const areaLines = s.byArea
+    .map((a) => `${AREA_ICON[a.area] ?? '•'} ${a.area} — ${a.runs} · ${cost(a.costUsd)}`)
+    .join('\n');
+
+  const topLines = s.topSessions.length
+    ? '\n\n<b>Top sessions</b>\n' +
+      s.topSessions
+        .map((t) => `${escapeHtml(titleOf(chatId, t.slot))} — ${cost(t.costUsd)} (${t.turns})`)
+        .join('\n')
+    : '';
+
+  const modelLine = s.models.length ? `\n\nModel: ${escapeHtml(s.models.join(', '))}` : '';
+
+  await adapter.send(chatId, {
+    text: `${head}\n\n${areaLines}${topLines}${modelLine}`,
+    format: 'tgHtml',
   });
 }
 

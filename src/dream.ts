@@ -1,5 +1,6 @@
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { config } from './config.js';
+import { extractUsage } from './claude.js';
 import type { ChatTransport } from './transport/types.js';
 import {
   chatTimeline,
@@ -9,6 +10,7 @@ import {
   listSessions,
   recentCorrections,
   saveDream,
+  saveUsage,
 } from './db.js';
 import { chunkRaw, stripLoneSurrogates, toTelegramMarkdown } from './format.js';
 
@@ -86,6 +88,9 @@ export async function runDream(transport: ChatTransport, chatId: number): Promis
         for (const b of m.message?.content ?? []) {
           if (b.type === 'text' && b.text) report += b.text;
         }
+      } else if (m.type === 'result') {
+        const usage = extractUsage(m);
+        if (usage) saveUsage(`${chatId}:dream`, usage);
       }
     }
   } catch (e) {

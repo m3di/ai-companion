@@ -1,6 +1,7 @@
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { config } from './config.js';
-import { markDreamProcessed, pendingDreams, saveGrow } from './db.js';
+import { extractUsage } from './claude.js';
+import { markDreamProcessed, pendingDreams, saveGrow, saveUsage } from './db.js';
 import { chunkRaw, stripLoneSurrogates, toTelegramMarkdown } from './format.js';
 import { knowledgePath, rebuildIndex, snapshotNotes } from './knowledge.js';
 import type { ChatTransport } from './transport/types.js';
@@ -80,6 +81,9 @@ export async function runGrow(transport: ChatTransport, chatId: number): Promise
         for (const b of m.message?.content ?? []) {
           if (b.type === 'text' && b.text) report += b.text;
         }
+      } else if (m.type === 'result') {
+        const usage = extractUsage(m);
+        if (usage) saveUsage(`${chatId}:grow`, usage);
       }
     }
   } catch (e) {
