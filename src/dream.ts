@@ -69,9 +69,10 @@ export async function runDream(transport: ChatTransport, chatId: number): Promis
   const digest = stripLoneSurrogates(buildDigest(chatId));
   const prompt = `Digest of recent activity:\n\n${digest}\n\nThe bot's own TypeScript source is in ./src and its SQLite database is at data/companion.db (binary — use the digest above for data; read the code for code proposals). You have read-only tools (Read/Grep/Glob). Produce your dream report now.`;
 
-  let report = '';
-  let ok = true;
-  try {
+  // One generation attempt — accumulates the report and records usage. Throws on
+  // failure so the retry wrapper can decide whether to try again.
+  const attempt = async (): Promise<string> => {
+    let report = '';
     for await (const m of query({
       prompt,
       options: {
@@ -91,12 +92,33 @@ export async function runDream(transport: ChatTransport, chatId: number): Promis
       } else if (m.type === 'result') {
         const usage = extractUsage(m);
         if (usage) saveUsage(`${chatId}:dream`, usage);
+        // A result with is_error means the run failed (e.g. a transient socket
+        // close); surface it so the retry wrapper can try again.
+        if (m.subtype !== 'success') throw new Error(String(m.subtype ?? 'error'));
       }
     }
-  } catch (e) {
-    ok = false;
-    report = `(dream failed: ${e instanceof Error ? e.message : String(e)})`;
+    return report;
+  };
+
+  // The dream runs unattended nightly, so a transient blip (socket close, 5xx)
+  // shouldn't cost a whole night — retry a couple of times before giving up.
+  const MAX_ATTEMPTS = 3;
+  let report = '';
+  let ok = true;
+  let lastErr = '';
+  for (let i = 1; i <= MAX_ATTEMPTS; i++) {
+    try {
+      report = await attempt();
+      ok = true;
+      break;
+    } catch (e) {
+      ok = false;
+      lastErr = e instanceof Error ? e.message : String(e);
+      console.warn(`[dream] attempt ${i}/${MAX_ATTEMPTS} failed: ${lastErr}`);
+      if (i < MAX_ATTEMPTS) await new Promise((r) => setTimeout(r, 5000 * i));
+    }
   }
+  if (!ok) report = `(dream failed after ${MAX_ATTEMPTS} attempts: ${lastErr})`;
 
   // Persist the reflection so it isn't post-and-forget — "grow" (Phase 1)
   // consumes these records. Only store a genuine report, not a failure/empty pass.
