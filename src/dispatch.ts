@@ -699,8 +699,9 @@ async function handleDreams(chatId: number, arg: string): Promise<void> {
       await adapter.send(chatId, { text: `No dream #${id} in the recent list.`, format: 'plain' });
       return;
     }
+    const window = d.covers_from && d.covers_to ? `\nCovers: ${d.covers_from} → ${d.covers_to} UTC` : '';
     await adapter.send(chatId, {
-      text: `🌙 Dream #${d.id} · ${d.created_at}${d.processed_at ? ' · processed' : ''}`,
+      text: `🌙 Dream #${d.id} · ${d.created_at}${d.processed_at ? ' · processed' : ''}${window}`,
       format: 'plain',
     });
     for (const piece of chunkRaw(d.report)) {
@@ -709,8 +710,9 @@ async function handleDreams(chatId: number, arg: string): Promise<void> {
     return;
   }
   const lines = dreams.map((d) => {
-    const first = (d.report.split('\n').find((l) => l.trim()) ?? '').replace(/[*#_`>]/g, '').slice(0, 70);
-    return `#${d.id} · ${d.created_at.slice(0, 16)}${d.processed_at ? ' ✓' : ''} — ${first}`;
+    const win = d.covers_to ? ` [${d.covers_from?.slice(5, 10) ?? '…'}→${d.covers_to.slice(5, 10)}]` : '';
+    const first = (d.report.split('\n').find((l) => l.trim()) ?? '').replace(/[*#_`>]/g, '').slice(0, 56);
+    return `#${d.id} · ${d.created_at.slice(0, 16)}${d.processed_at ? ' ✓' : ''}${win} — ${first}`;
   });
   await adapter.send(chatId, {
     text: `🌙 Recent dreams (/dreams <id> for the full report):\n${lines.join('\n')}`,

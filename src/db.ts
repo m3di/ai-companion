@@ -183,6 +183,17 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_usage_session ON usage(session_key);
 `);
 
+// Each dream covers a specific, non-overlapping time window — (end of the last
+// dream, now) — so nightly dreams each reflect on ~a day and never re-scan the
+// same activity. Added after the table's first ship.
+const hasCovers = db
+  .prepare("SELECT 1 FROM pragma_table_info('dreams') WHERE name = 'covers_to'")
+  .get();
+if (!hasCovers) {
+  db.exec('ALTER TABLE dreams ADD COLUMN covers_from TEXT');
+  db.exec('ALTER TABLE dreams ADD COLUMN covers_to TEXT');
+}
+
 // Each thread keeps a durable "memo": a short summary of what it's about and
 // where it's at, written by the session itself via the setMemo tool. It labels
 // the thread, enriches catch-up, and (later) feeds the auto-router.
@@ -254,6 +265,10 @@ const stmts = {
   ),
   chatTimeline: db.prepare<[string, number]>(
     "SELECT session_key, role, content FROM messages WHERE session_key LIKE ? ORDER BY id DESC LIMIT ?",
+  ),
+  // Messages within a half-open time window (from, to] — for time-scoped dreams.
+  chatTimelineWindow: db.prepare<[string, string, string, number]>(
+    'SELECT session_key, role, content FROM messages WHERE session_key LIKE ? AND created_at > ? AND created_at <= ? ORDER BY id DESC LIMIT ?',
   ),
   // chat / slot management
   listSessions: db.prepare<[number, string]>(
@@ -354,12 +369,19 @@ const stmts = {
   countPending: db.prepare<[number]>('SELECT COUNT(*) AS n FROM pending_inbox WHERE chat_id = ?'),
   isCapturing: db.prepare<[number]>('SELECT capturing FROM chat_state WHERE chat_id = ?'),
   setCapturing: db.prepare<[number, number]>('UPDATE chat_state SET capturing = ? WHERE chat_id = ?'),
-  saveDream: db.prepare<[number, string]>('INSERT INTO dreams (chat_id, report) VALUES (?, ?)'),
+  saveDream: db.prepare<[number, string, string | null, string | null]>(
+    'INSERT INTO dreams (chat_id, report, covers_from, covers_to) VALUES (?, ?, ?, ?)',
+  ),
+  // Where the most recent dream's window ended (its covers_to), so the next dream
+  // starts there. Falls back to the dream's created_at for pre-windowing rows.
+  lastDreamCoveredTo: db.prepare<[number]>(
+    'SELECT COALESCE(covers_to, created_at) AS t FROM dreams WHERE chat_id = ? ORDER BY id DESC LIMIT 1',
+  ),
   recentDreams: db.prepare<[number, number]>(
-    'SELECT id, report, created_at, processed_at FROM dreams WHERE chat_id = ? ORDER BY id DESC LIMIT ?',
+    'SELECT id, report, created_at, processed_at, covers_from, covers_to FROM dreams WHERE chat_id = ? ORDER BY id DESC LIMIT ?',
   ),
   pendingDreams: db.prepare<[number]>(
-    'SELECT id, report, created_at FROM dreams WHERE chat_id = ? AND processed_at IS NULL ORDER BY id',
+    'SELECT id, report, created_at, covers_from, covers_to FROM dreams WHERE chat_id = ? AND processed_at IS NULL ORDER BY id',
   ),
   markDreamProcessed: db.prepare<[number]>(
     "UPDATE dreams SET processed_at = datetime('now') WHERE id = ?",
@@ -455,6 +477,26 @@ export function chatTimeline(
     content: string;
   }>;
   return rows.reverse();
+}
+
+/** Messages in the half-open window (from, to], oldest-first, capped at `limit`. */
+export function chatTimelineBetween(
+  chatId: number,
+  from: string,
+  to: string,
+  limit: number,
+): Array<{ session_key: string; role: string; content: string }> {
+  const rows = stmts.chatTimelineWindow.all(`${chatId}:%`, from, to, limit) as Array<{
+    session_key: string;
+    role: string;
+    content: string;
+  }>;
+  return rows.reverse();
+}
+
+/** Current time in the DB's text format (UTC), for window boundaries. */
+export function dbNow(): string {
+  return (db.prepare("SELECT datetime('now') AS t").get() as { t: string }).t;
 }
 
 export interface ChatSession {
@@ -689,11 +731,25 @@ export interface DreamRecord {
   report: string;
   created_at: string;
   processed_at?: string | null;
+  /** The activity window this dream reflected on (half-open: covers_from..covers_to]. */
+  covers_from?: string | null;
+  covers_to?: string | null;
 }
 
-/** Persist a dream reflection's report. Returns its id. */
-export function saveDream(chatId: number, report: string): number {
-  return Number(stmts.saveDream.run(chatId, report).lastInsertRowid);
+/** Persist a dream reflection's report + the activity window it covered. */
+export function saveDream(
+  chatId: number,
+  report: string,
+  coversFrom?: string,
+  coversTo?: string,
+): number {
+  return Number(stmts.saveDream.run(chatId, report, coversFrom ?? null, coversTo ?? null).lastInsertRowid);
+}
+
+/** Where the last dream's window ended (so the next dream starts there), or undefined. */
+export function lastDreamCoveredTo(chatId: number): string | undefined {
+  const row = stmts.lastDreamCoveredTo.get(chatId) as { t: string } | undefined;
+  return row?.t;
 }
 
 /** Recent dreams for a chat, newest-first. */

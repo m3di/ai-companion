@@ -3,10 +3,12 @@ import { config } from './config.js';
 import { extractUsage } from './claude.js';
 import type { ChatTransport } from './transport/types.js';
 import {
-  chatTimeline,
+  chatTimelineBetween,
+  dbNow,
   getMemo,
   getSession,
   getSharedMemory,
+  lastDreamCoveredTo,
   listSessions,
   recentCorrections,
   saveDream,
@@ -34,8 +36,13 @@ Output a concise, scannable report: what you noticed and the specific action you
 
 Output ONLY the report content — no preamble about your process, and no title/header line (a "Dream report" header is added for you). Start straight with the highest-impact item.`;
 
-/** A compact digest of recent activity for the dreaming agent. */
-function buildDigest(chatId: number): string {
+/**
+ * A compact digest of the activity within a window (from, to]. Shared memory,
+ * the thread index, and routing corrections are current-state context; only the
+ * conversation timeline is time-scoped, so each dream reflects on its own slice.
+ * Returns the digest and how many messages fell in the window (0 = quiet).
+ */
+function buildDigest(chatId: number, from: string, to: string): { digest: string; messages: number } {
   const shared = getSharedMemory(chatId).trim() || '(empty)';
 
   const threads = listSessions(chatId, 'active');
@@ -50,7 +57,8 @@ function buildDigest(chatId: number): string {
   };
   // Interleaved, time-ordered — how the user actually experienced it. The
   // [thread] tag shows where the concierge routed each message.
-  const timeline = chatTimeline(chatId, 180)
+  const rows = chatTimelineBetween(chatId, from, to, 250);
+  const timeline = rows
     .map((m) => `[${titleFor(m.session_key)}] ${m.role === 'user' ? 'You' : 'Bot'}: ${m.content.replace(/\s+/g, ' ').slice(0, 260)}`)
     .join('\n');
 
@@ -59,14 +67,31 @@ function buildDigest(chatId: number): string {
       .map((c) => `- "${c.message}" belonged to ${c.title}, not ${c.wrong_title}`)
       .join('\n') || '(none)';
 
-  return `## Shared memory\n${shared}\n\n## Threads (for reference)\n${threadIndex}\n\n## Routing corrections (auto-routing mistakes)\n${corrections}\n\n## Conversation timeline — chronological, the way the user actually experienced it; [thread] = where each message was routed\n${timeline}`;
+  const digest = `## Window\nThis reflection covers activity from ${from} to ${to} (UTC).\n\n## Shared memory\n${shared}\n\n## Threads (for reference)\n${threadIndex}\n\n## Routing corrections (auto-routing mistakes)\n${corrections}\n\n## Conversation timeline — chronological, the way the user actually experienced it; [thread] = where each message was routed\n${timeline}`;
+  return { digest, messages: rows.length };
 }
 
 /** Run a dry-run dreaming pass and post the report to the chat. Read-only. */
 export async function runDream(transport: ChatTransport, chatId: number): Promise<void> {
-  // Slicing message content (below) can split an emoji's surrogate pair; a lone
-  // surrogate makes the request body invalid JSON, so strip them before sending.
-  const digest = stripLoneSurrogates(buildDigest(chatId));
+  // Each dream covers a specific, non-overlapping window: from where the last
+  // dream ended, to now. Nightly → ~a day each; a missed/failed night is picked
+  // up next time because the window only advances when a dream is saved.
+  const to = dbNow();
+  const from = lastDreamCoveredTo(chatId) ?? '1970-01-01 00:00:00';
+
+  // Slicing message content can split an emoji's surrogate pair; a lone surrogate
+  // makes the request body invalid JSON, so strip them before sending.
+  const { digest: rawDigest, messages } = buildDigest(chatId, from, to);
+  if (messages === 0) {
+    await transport
+      .send(chatId, {
+        text: `🌙 Nothing new to dream about since the last reflection (${from} → ${to} UTC). Skipped.`,
+        format: 'plain',
+      })
+      .catch(() => {});
+    return;
+  }
+  const digest = stripLoneSurrogates(rawDigest);
   const prompt = `Digest of recent activity:\n\n${digest}\n\nThe bot's own TypeScript source is in ./src and its SQLite database is at data/companion.db (binary — use the digest above for data; read the code for code proposals). You have read-only tools (Read/Grep/Glob). Produce your dream report now.`;
 
   // One generation attempt — accumulates the report and records usage. Throws on
@@ -120,17 +145,18 @@ export async function runDream(transport: ChatTransport, chatId: number): Promis
   }
   if (!ok) report = `(dream failed after ${MAX_ATTEMPTS} attempts: ${lastErr})`;
 
-  // Persist the reflection so it isn't post-and-forget — "grow" (Phase 1)
-  // consumes these records. Only store a genuine report, not a failure/empty pass.
+  // Persist the reflection + the window it covered, so "grow" consumes it and the
+  // next dream starts where this one ended. Only advance the window on success —
+  // a failed pass leaves it unsaved so the next dream re-covers the same span.
   let savedId: number | undefined;
-  if (ok && report.trim()) savedId = saveDream(chatId, report.trim());
+  if (ok && report.trim()) savedId = saveDream(chatId, report.trim(), from, to);
 
   await transport
     .send(chatId, {
       text:
         '🌙 <b>Dream report</b> — reflections on recent activity (dry-run, nothing changed)' +
         (savedId !== undefined ? ` · saved #${savedId}` : '') +
-        ':',
+        `\n<i>covers ${from} → ${to} UTC</i>:`,
       format: 'tgHtml',
     })
     .catch(() => {});
