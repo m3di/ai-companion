@@ -287,7 +287,7 @@ export function readStory(scope: string): { text: string } | { problem: string }
  *
  * Resolution goes against the DERIVED entity index, never `loadGraph()`: a
  * parse rebuilds the index and syncs provenance — writes — and this set is
- * read from read-only paths (cycleCli's I11 promise, the Atlas, readOnly
+ * read from read-only paths (cycleCli's I13 promise, the Atlas, readOnly
  * module calls). Two SELECTs per refresh is the true cost.
  *
  * Cached because the check runs on every module call: rewrites in this

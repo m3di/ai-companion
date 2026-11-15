@@ -6,7 +6,7 @@ import { config } from './config.js';
 import { setPulseSink } from './pulse.js';
 
 /**
- * A TEST MAY NOT OPEN THE LIVE DATABASE. (I11, 2026-08-05.)
+ * A TEST MAY NOT OPEN THE LIVE DATABASE. (I13, 2026-08-05.)
  *
  * `test/prepare.ts` already refuses to DELETE the live DB, which is the lesson
  * 2026-08-02 bought. It does not stop a test from WRITING to it, and the suite's
@@ -3550,7 +3550,7 @@ export function rotHistory(limit = 30): Array<{ rot: number; birth: number; enti
 setPulseSink(publishPulse);
 
 /** Record a pulse for other processes to pick up. Never throws — an observation
- *  hook in a hot path must not be able to take down what it observes (I11). */
+ *  hook in a hot path must not be able to take down what it observes (I13). */
 export function publishPulse(pid: number, at: string, body: string): void {
   try {
     db.prepare('INSERT INTO pulses (pid, at, body) VALUES (?, ?, ?)').run(pid, at, body);
@@ -4082,7 +4082,7 @@ export function hasOpenRetrievalEpisode(sessionKey: string): boolean {
 
 /** The graph's ids from the derived index — a read, where `loadGraph()` is a
  *  parse that WRITES (rebuilds the index, syncs provenance) and so is barred
- *  from read-only paths (I11). */
+ *  from read-only paths (I13). */
 export function knownEntityIds(): Set<string> {
   return new Set((db.prepare('SELECT id FROM entities').all() as Array<{ id: string }>).map((r) => r.id));
 }

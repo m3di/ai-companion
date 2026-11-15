@@ -84,36 +84,6 @@ detected corruption and thereby disabled the only mechanism that could fix it.
 **I9 · If it must hold, it cannot be an instruction.** Mechanism over prompt
 line. _Bought by:_ round 7's writing rule, and every mandate before it.
 
-**I11 · An observer may not damage what it observes.** Health checks, audits,
-snapshots and dashboards read; they do not write, delete, or reconfigure the
-thing they are measuring. Any tool with a destructive step must verify its own
-target rather than trust an ambient setting. _Bought by:_ M2's nightly audit
-shelling out to `npm test`, whose snapshot step deleted its destination, whose
-destination came from the environment, which in the bot named the LIVE database
-— the night auditing its health destroyed 5,491 messages, recovered only from a
-backup that existed by luck.
-_Tested by:_ `test/prepare.ts` refuses when its destination resolves to its source.
-
-**I12 · Nothing that moves goes in front of the transcript.** A system prompt is
-a cache prefix: every byte of it sits ahead of the whole conversation, so a
-value that ticks makes the entire history uncacheable and re-billed at roughly
-twelve times what reading it costs. Injected context must be STABLE for the life
-of the session — per-task, not per-clock and not per-probe. A surface that
-changes underneath a running agent is passed in the turn, or not at all.
-_Bought by:_ the focus set living in the worker's injected context, carrying a
-per-item `checked <wall-clock>` stamp refreshed by a sweep that runs every few
-minutes. On 2026-08-02 a single worker session spent **$86.42 of the day's
-$116.89**; two calls 67 seconds apart — well inside the cache TTL — each
-re-wrote ~614k tokens, and one of them produced 372 tokens of output for $3.87.
-The work was never expensive; the prefix was. Note that this is I9 again in a
-new place: "keep the injected context stable" cannot be an instruction, because
-nothing that reads it can tell that it moved.
-_Tested by:_ `test/workerPrompt.test.ts` — the worker's system prompt must be
-byte-identical across builds with the world moved between them, and hold no
-clock, no date and no directory; `test/workerContext.test.ts` — the one-time
-session-open block renders the same brief byte-identically and names the day
-the thread began exactly once (a snapshot may carry a date; a prefix may not).
-
 **I10 · The operator can see everything.** Every write, every read, every night's
 reach is inspectable — that is what makes an autonomous night safe to grant more
 power to. The Atlas is not a nicety; it is the accountability surface.
@@ -147,6 +117,36 @@ file" (dream #121), and the departure morning offered sightseeing, on a
 _Tested by:_ `test/dated.test.ts` — every human message naming a day or a time
 is offered to the night and carried until it gets a verdict; the snapshot's
 first line names today and yesterday.
+
+**I12 · Nothing that moves goes in front of the transcript.** A system prompt is
+a cache prefix: every byte of it sits ahead of the whole conversation, so a
+value that ticks makes the entire history uncacheable and re-billed at roughly
+twelve times what reading it costs. Injected context must be STABLE for the life
+of the session — per-task, not per-clock and not per-probe. A surface that
+changes underneath a running agent is passed in the turn, or not at all.
+_Bought by:_ the focus set living in the worker's injected context, carrying a
+per-item `checked <wall-clock>` stamp refreshed by a sweep that runs every few
+minutes. On 2026-08-02 a single worker session spent **$86.42 of the day's
+$116.89**; two calls 67 seconds apart — well inside the cache TTL — each
+re-wrote ~614k tokens, and one of them produced 372 tokens of output for $3.87.
+The work was never expensive; the prefix was. Note that this is I9 again in a
+new place: "keep the injected context stable" cannot be an instruction, because
+nothing that reads it can tell that it moved.
+_Tested by:_ `test/workerPrompt.test.ts` — the worker's system prompt must be
+byte-identical across builds with the world moved between them, and hold no
+clock, no date and no directory; `test/workerContext.test.ts` — the one-time
+session-open block renders the same brief byte-identically and names the day
+the thread began exactly once (a snapshot may carry a date; a prefix may not).
+
+**I13 · An observer may not damage what it observes.** Health checks, audits,
+snapshots and dashboards read; they do not write, delete, or reconfigure the
+thing they are measuring. Any tool with a destructive step must verify its own
+target rather than trust an ambient setting. _Bought by:_ M2's nightly audit
+shelling out to `npm test`, whose snapshot step deleted its destination, whose
+destination came from the environment, which in the bot named the LIVE database
+— the night auditing its health destroyed 5,491 messages, recovered only from a
+backup that existed by luck.
+_Tested by:_ `test/prepare.ts` refuses when its destination resolves to its source.
 
 ---
 
@@ -1864,7 +1864,7 @@ recorded is worth more than a forgotten one.
   (2026-08-02) but nothing stopped a test *writing* to it. `src/db.ts` now
   refuses to open it when `NODE_TEST_CONTEXT` is set — the runner sets it, the
   bot never does, so it is mechanism rather than a rule someone must remember
-  (I9, I11). 202 green.
+  (I9, I13). 202 green.
 - **2026-08-05** — **The graph can be measured.** `modules/graph` — six
   read-only functions that answer questions about the GRAPH rather than about
   the work: `shape`, `domains`, `heavy`, `loose`, `similar`, `hierarchy`. Built
@@ -2049,7 +2049,7 @@ recorded is worth more than a forgotten one.
   5,491 messages, 48 sessions, 48 dreams — recovered whole from a backup that
   existed only because M0 had needed one four minutes earlier. Fixed at three
   layers (prepare refuses, npm sets it, the audit scrubs it) and recorded as
-  **I11**. The compounding failure was human: `openFriction()` was watched going
+  **I13**. The compounding failure was human: `openFriction()` was watched going
   12 rows → 0 → 1 and explained away as live churn, three hours before anyone
   looked. Also today: `src/auditCli.ts`, so the audit is a command and not only
   a line in a report nobody may read.

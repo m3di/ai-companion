@@ -11,7 +11,7 @@
  * context (M4, 2026-08-05) is a bet on, and an unmeasured bet is
  * indistinguishable from a story.
  *
- * Read-only (I11): it writes nothing and opens the database read-only, so it is
+ * Read-only (I13): it writes nothing and opens the database read-only, so it is
  * safe to run mid-test as often as you like. `npx tsx src/cycleCli.ts` for
  * recent cycles; `--open` for the live window since the last dream, which is
  * the one you are inside during a test.
