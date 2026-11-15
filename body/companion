@@ -1,0 +1,22 @@
+#!/bin/sh
+# ./companion [open | restart | build | stop | test] — build Companion.app (a real bundle: it gets its own
+# Microphone grant in part 2) from body/, and open it. Mirrors reflex's ./reflex.
+cd "$(dirname "$0")" || exit 1
+app=.build/Companion.app
+build() {
+  swift build -c release --product companion-app 2>&1 | grep -E "error|Build" | tail -3
+  mkdir -p "$app/Contents/MacOS"
+  # Copy then rename: a running Companion keeps its old binary instead of having it rewritten under it.
+  cp .build/release/companion-app "$app/Contents/MacOS/Companion.new" && mv -f "$app/Contents/MacOS/Companion.new" "$app/Contents/MacOS/Companion"
+  cp Support/Companion/Info.plist "$app/Contents/Info.plist"
+  codesign --force --sign - "$app" 2>&1 | grep -v "replacing existing signature"; true
+}
+running() { pgrep -x Companion >/dev/null; }
+case "${1:-open}" in
+  open)    if running; then echo "Companion is running — ./companion restart to load a new build"; open "$app"; else build && open "$app"; fi ;;
+  restart) build && { running && pkill -x Companion; sleep 1; open "$app"; } ;;
+  build)   build && echo "built $app" ;;
+  stop)    pkill -x Companion && echo stopped || echo "not running" ;;
+  test)    swift run bodykit-check 2>&1 | grep -E "error|ok|FAIL" ;;
+  *)       echo "usage: ./companion [open | restart | build | stop | test]" ;;
+esac

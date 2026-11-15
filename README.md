@@ -29,14 +29,15 @@ machine.
                                                   ▼                            ▼
                             SQLite (the firehose: sessions, messages)   work on your repos
                                                   │
-                              nightly  ──▶  💤 dream  ──▶  dream records
-                                                                │
-                              operator ──▶  🌱 grow  ◀──────────┘
+                        nightly ──▶  💤 dream (reflect) ──▶ typed findings
+                                                  │
+                                     🌱 grow (act, same night)
                                                   │
                                                   ▼
-                                   knowledge/ (git-tracked curated brain)
+                                   knowledge/ (curated brain, a tree)
                                                   │
-                                                  └──▶ read by every future turn
+                                                  ├──▶ read by every future turn
+                                                  └──▶ ⏰ morning brief (reminders)
 ```
 
 - **One front door.** You always talk to the **concierge**. It answers, manages
@@ -45,10 +46,15 @@ machine.
 - **Workers** are parallel, resumable Claude Code sessions. They run in the
   background and report through the concierge; one you're watching streams live.
 - **The flywheel.** SQLite is the short-term firehose (what happened).
-  `knowledge/` is the long-term brain (what we learned). Two transforms connect
-  them: **dream** compacts recent activity into reflections; **grow** promotes
-  those reflections into committed, curated knowledge. Every interaction makes
-  the next answer better.
+  `knowledge/` is the long-term brain (what we learned), organized as a tree
+  the system grows itself. Each night **dream** reflects on the day and emits
+  typed findings; **grow** applies them the same night — fixing memos and
+  shared memory, writing and reorganizing notes. Reminders reach you in a
+  **morning brief**; proposed code changes queue for the operator, never
+  auto-applied. Every interaction makes the next answer better.
+- **Wakeups.** The bot schedules prompts for its own future self (`/wakeups`):
+  reminders, re-checks of pending items, recurring routines like the morning
+  brief — and can reconfigure them by talking to you.
 
 ---
 
@@ -99,9 +105,12 @@ There is exactly **one** interaction model, so nothing is ambiguous:
 | `/process`    | Triage everything captured and fan it out to threads.          |
 | `/cancel`     | Stop all running work in this chat.                            |
 | `/repos`      | List, add, or scan your workspace repos.                       |
-| `/dream`      | Run an offline self-reflection over recent activity now.       |
+| `/dream`      | Run the reflect stage over recent activity now.                |
 | `/dreams`     | List saved reflections (`/dreams <id>` for the full report).   |
-| `/grow`       | Refine the knowledge base from recent reflections.             |
+| `/grow`       | Run the act stage: apply pending findings to memory/knowledge. |
+| `/wakeups`    | The bot's scheduled wakeups & reminders.                       |
+| `/proposals`  | Code/prompt changes the bot proposed (operator-gated).         |
+|               | …and the design proposals open with the developer (`src/proposalCli.ts`). |
 | `/status`     | Concierge + worker overview.                                   |
 
 ---
@@ -109,18 +118,27 @@ There is exactly **one** interaction model, so nothing is ambiguous:
 ## 🌱 The knowledge flywheel
 
 - **Knowledge base** — `KNOWLEDGE_DIR` (default `data/knowledge`) is a
-  **git-tracked** directory of markdown notes: one `<key>.md` per note
-  (frontmatter + body, cross-linked as `[[other-key]]`) plus a generated
-  `index.md`. Workers and the concierge read and write it through their tools, and
-  every write auto-commits — so the brain has real, reviewable history.
-- **dream** — a read-only reflection pass (scheduled nightly at `NIGHTLY_HOUR`,
-  or on demand via `/dream`). It reviews recent activity and the bot's memory and
-  records a report to the `dreams` table. It changes nothing.
-- **grow** — operator-triggered (`/grow`). It reads the unprocessed dreams and the
-  knowledge base, then **refines the notes** (merge duplicates, fix stale facts,
-  split, re-link, tighten) and lands **one reviewable commit** — with a one-tap
-  **↩️ Revert**. Grow's working directory *is* the knowledge repo, so it can never
-  touch the bot's source.
+  directory **tree** of markdown notes: one `<key>.md` per note, where the key
+  is a path (`work/project/topic`), plus per-folder `_map.md` descriptions and
+  a generated `index.md`. No taxonomy is prescribed — the nightly act stage
+  grows the structure the data justifies (a dev's bot and a doctor's bot grow
+  different trees). Notes cross-link as `[[key]]` (full path, or the final name
+  when unique — links survive moves).
+- **dream (reflect)** — a read-only pass (nightly at `NIGHTLY_HOUR`, or
+  `/dream`). It reviews the day's window against memory and the knowledge tree
+  and ends with **typed findings**: `memory-fix` and `knowledge` (applied
+  tonight), `reminder` (morning brief), `proposal` (operator-gated code/prompt
+  change), `idea`.
+- **grow (act)** — runs right after the dream, same night (or `/grow`). It
+  applies the mechanical findings: fixes thread memos and shared memory through
+  narrow tools, writes/merges/moves notes, curates folders and `_map.md`s, and
+  keeps the `[[link]]` report clean. Working directory = the knowledge tree, so
+  it can never touch the bot's source; changes land in the `grows` change-log
+  (`/grows`). Findings that ask for code changes are skipped and stay queued in
+  `/proposals` for a human.
+- **morning brief** — a default daily wakeup (`MORNING_HOUR`): the concierge
+  delivers pending reminders and a one-line "what changed overnight". The bot
+  owns the schedule — ask it to move or disable the brief.
 
 The knowledge directory is each deployment's own — it's git-ignored from this
 repo and persists on your machine (or a PVC), never in the framework.
@@ -155,7 +173,8 @@ All configuration is environment variables (see [`.env.example`](.env.example)):
 | `PERMISSION_MODE`    |          | Default mode for worker tools (`default` · `acceptEdits` · `auto`).         |
 | `CLAUDE_MODEL`       |          | Model override, e.g. `claude-opus-4-8`. Empty = SDK/CLI default.            |
 | `KNOWLEDGE_DIR`      |          | Git-tracked knowledge base. Default `data/knowledge`.                       |
-| `NIGHTLY_HOUR`       |          | Hour (0–23) to run the nightly dream. Default `4`.                          |
+| `NIGHTLY_HOUR`       |          | Hour (0–23) to run the nightly dream → grow pipeline. Default `4`.          |
+| `MORNING_HOUR`       |          | Hour (0–23) for the default morning-brief wakeup. Default `8`.              |
 | `SYSTEM_PROMPT_PATH` |          | Path to the dynamic system prompt. Default `prompts/system.md`.             |
 | `DB_PATH`            |          | SQLite path. Default `data/companion.db`.                                    |
 
@@ -196,9 +215,10 @@ src/
 ├── liveStatus.ts     the self-editing live status message
 ├── format.ts         Markdown/HTML formatting + tool summaries
 ├── db.ts             SQLite schema + queries (the firehose)
-├── knowledge.ts      the git-tracked knowledge base (files + commits)
-├── dream.ts          offline self-reflection → dreams table
-├── grow.ts           the knowledge-base librarian (dreams → committed notes)
+├── knowledge.ts      the knowledge tree (path keys, folders, links, index)
+├── dream.ts          nightly reflect stage → dream report + typed findings
+├── grow.ts           nightly act stage (findings → memory + knowledge edits)
+├── wakeups.ts        self-scheduled wakeups (incl. the morning brief)
 ├── digest.ts         digest a document into knowledge notes
 ├── workspace.ts      the workspace repo registry
 └── config.ts         env-var configuration

@@ -1,37 +1,69 @@
 import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
-import { recordOutbound, setMemo } from './db.js';
+import { noteMiss } from './friction.js';
+import { bumpRetrieval, recordOutbound } from './db.js';
 import { getNote, listNotes, upsertNote } from './knowledge.js';
 import { escapeHtml } from './format.js';
 import { CONTROL_SLOT, type RunningView } from './sessions.js';
 import type { Buttons } from './transport/types.js';
 
-interface AskEntry {
-  resolve: (choice: string) => void;
-  options: string[];
-  question: string;
-  messageId?: number;
+interface PendingAsk {
+  key: string;
+  slot: number;
+  chatId: number;
+  questions: { question: string; header?: string; options: string[] }[];
+  answers: (string | undefined)[];
+  messageIds: (number | undefined)[];
 }
 
-/** Pending tg_ask questions, keyed by a short id carried in callback_data. */
-const askPending = new Map<string, AskEntry>();
+/** Pending tg_ask questions, keyed by a short id carried in callback_data.
+ *  A question does NOT hold its turn open — the turn ends after posting and the
+ *  answer arrives as a fresh turn (like a typed reply), so this map only lives
+ *  between posting the buttons and the last one being tapped. */
+const askPending = new Map<string, PendingAsk>();
 /** Quick-reply payloads: button id -> text + the session key to run it against. */
 const quickReplies = new Map<string, { text: string; key: string }>();
 
 let seq = 0;
 const nextId = () => (++seq).toString(36);
 
-/** Resolve a tg_ask from a button tap. Returns details for the UI, or null. */
-export function resolveAsk(
-  id: string,
-  idx: number,
-): { question: string; chosen: string; messageId?: number } | null {
-  const entry = askPending.get(id);
-  if (!entry) return null;
-  askPending.delete(id);
-  const chosen = entry.options[idx] ?? '(unknown)';
-  entry.resolve(chosen);
-  return { question: entry.question, chosen, messageId: entry.messageId };
+export interface AskResolution {
+  question: string;
+  chosen: string;
+  messageId?: number;
+  /** True once EVERY question in this ask has an answer — time to re-invoke. */
+  complete: boolean;
+  chatId?: number;
+  slot?: number;
+  /** The prompt to resume the session with, present only when complete. */
+  prompt?: string;
+}
+
+/** Record one button tap. Fills that question's answer; when the whole ask is
+ *  answered, returns the resume prompt so the caller re-invokes the session. */
+export function resolveAsk(id: string, qIdx: number, oIdx: number): AskResolution | null {
+  const p = askPending.get(id);
+  if (!p) return null;
+  const q = p.questions[qIdx];
+  if (!q) return null;
+  const chosen = q.options[oIdx] ?? '(unknown)';
+  p.answers[qIdx] = chosen;
+  const complete = p.answers.every((a) => a !== undefined);
+  const res: AskResolution = { question: q.question, chosen, messageId: p.messageIds[qIdx], complete };
+  if (complete) {
+    askPending.delete(id);
+    res.chatId = p.chatId;
+    res.slot = p.slot;
+    const lines = p.questions.map((qq, i) => `- ${qq.header ? `${qq.header}: ` : ''}${qq.question} → ${p.answers[i]}`);
+    res.prompt = `[USER ANSWERED] The question(s) you posted have been answered:\n${lines.join('\n')}\n\nContinue with these answers.`;
+  }
+  return res;
+}
+
+/** Drop any pending asks for a session — called when a fresh turn begins, so a
+ *  typed answer supersedes the buttons and a late tap can't double-resume. */
+export function clearPendingAsks(key: string): void {
+  for (const [id, p] of askPending) if (p.key === key) askPending.delete(id);
 }
 
 /** Pop the text + target session behind a quick-reply button, if still live. */
@@ -44,10 +76,9 @@ export function takeQuickReply(id: string): { text: string; key: string } | unde
 const INSTRUCTIONS = `You reach the user through a Telegram chat. Your normal reply text is shown to them rendered as Markdown. In addition, you have two tools to compose the Telegram UI directly — use them to present information in whatever shape fits best.
 
 - telegram · send — deliver a message written in raw Telegram HTML, optionally with inline buttons. Use it when plain prose can't express the layout: an expandable detail section <blockquote expandable>…</blockquote>, a spoiler <tg-spoiler>…</tg-spoiler>, code <pre><code>…</code></pre>, a link button to a PR/file, or a compact menu.
-- telegram · ask — pose a single quick question with tappable options and wait for the answer. Use it to branch on one decision instead of guessing (which file, which branch, proceed or not).
-- telegram · askUserQuestion — ask up to 4 decisions at once, each option carrying a one-line explanation, rendered as tappable buttons. This is how you ask structured questions here. The built-in AskUserQuestion tool does NOT work in this chat — always use this instead.
-- telegram · setMemo — keep this thread labeled and resumable. This chat runs several parallel threads shown as buttons, and an auto-router uses these memos to route messages to the right thread, so an unset memo hurts. EARLY in your first substantive reply in a thread, call setMemo with a short title and a 1-2 line status of what this thread is about; update it after meaningful progress or when the focus shifts. It's cheap and silent — don't ask permission, just keep it current.
-- telegram · recallNotes / readNote / saveFinding — a knowledge base of durable findings, shared across all threads, so hard-won answers aren't re-derived. BEFORE substantial digging (mapping a dependency chain, working out how something works), call recallNotes() to check whether a past finding already answers it, then readNote(key) to pull it. AFTER producing a durable, reusable answer — or whenever the user says to save/remember it — call saveFinding(key, summary, content) with the distilled conclusion (key files, names, gotchas; not the play-by-play).
+- telegram · ask — pose a single quick question with tappable options, then END your turn. The answer comes back as your next turn (it does NOT block). Use it to branch on one decision instead of guessing (which file, which branch, proceed or not).
+- telegram · askUserQuestion — ask up to 4 decisions at once, each option carrying a one-line explanation, rendered as tappable buttons; then END your turn — the answers arrive as your next turn. This is how you ask structured questions here. The built-in AskUserQuestion tool does NOT work in this chat — always use this instead.
+- telegram · recallNotes / readNote / saveFinding — the system's shared knowledge TREE: one _map per domain (a 60-second briefing ending in LEADS — what to do, keywords, where to dig) plus a few depth notes. It is an INDEX over the traces, not an archive: it holds conclusions and pointers, while the detail lives in the message log, session transcripts, git and Fibery. BEFORE substantial digging (mapping a dependency chain, working out how something works), call recallNotes() and read your domain's _map — it often names the gotcha, the exact command, or the dead end someone already hit. AFTER producing a durable, reusable conclusion — or whenever the user says to save/remember it — call saveFinding(key, summary, content) with the distilled result (key files, names, gotchas; not the play-by-play); the nightly rewrite folds it into the right map.
 
 Rules:
 - For an ordinary answer, just reply normally. Do NOT also send the same text via 'send' — that double-posts. Use 'send' for the things prose can't do.
@@ -119,42 +150,47 @@ export function buildUiServer(view: RunningView) {
     },
   );
 
-  // Pose one question with tappable options (and an Other escape hatch) and
-  // block until the user picks. `body` is extra HTML shown under the question.
-  const askOne = async (question: string, optionLabels: string[], body = ''): Promise<string> => {
+  // Post one or more questions as tappable options and RETURN — the turn ends,
+  // and each answer arrives as a fresh turn (like a typed reply) rather than
+  // blocking the thread open. `body` is extra HTML shown under a question.
+  const postAsk = async (
+    questions: { question: string; header?: string; options: string[]; body?: string }[],
+  ): Promise<void> => {
     const id = nextId();
-    const buttons: Buttons = [];
-    optionLabels.forEach((opt, i) => {
-      if (i % 2 === 0) buttons.push([]);
-      buttons[buttons.length - 1]!.push({ text: opt.slice(0, 64), data: `ask:${id}:${i}` });
-    });
-    const prefix = view.slot === CONTROL_SLOT ? '' : `🔧 <b>${escapeHtml(view.title)}</b> · `;
-    const ref = await view.transport.send(chatId, {
-      text: `${prefix}❓ <b>${escapeHtml(question)}</b>${body}`,
-      format: 'tgHtml',
-      buttons,
-    });
-    recordOutbound(chatId, ref.messageId, view.key);
-    return new Promise<string>((resolve) => {
-      const timeout = setTimeout(() => {
-        askPending.delete(id);
-        resolve('(user did not answer in time)');
-      }, 10 * 60 * 1000);
-      askPending.set(id, {
-        resolve: (c) => {
-          clearTimeout(timeout);
-          resolve(c);
-        },
-        options: optionLabels,
-        question,
-        messageId: ref.messageId,
+    const messageIds: (number | undefined)[] = [];
+    for (let q = 0; q < questions.length; q++) {
+      const { question, options, body } = questions[q]!;
+      const buttons: Buttons = [];
+      options.forEach((opt, o) => {
+        if (o % 2 === 0) buttons.push([]);
+        buttons[buttons.length - 1]!.push({ text: opt.slice(0, 64), data: `ask:${id}:${q}:${o}` });
       });
+      const prefix = view.slot === CONTROL_SLOT ? '' : `🔧 <b>${escapeHtml(view.title)}</b> · `;
+      const counter = questions.length > 1 ? ` <i>(${q + 1}/${questions.length})</i>` : '';
+      const ref = await view.transport.send(chatId, {
+        text: `${prefix}❓ <b>${escapeHtml(question)}</b>${counter}${body ?? ''}`,
+        format: 'tgHtml',
+        buttons,
+      });
+      recordOutbound(chatId, ref.messageId, view.key);
+      messageIds.push(ref.messageId);
+    }
+    askPending.set(id, {
+      key: view.key,
+      slot: view.slot,
+      chatId,
+      questions: questions.map((q) => ({ question: q.question, header: q.header, options: q.options })),
+      answers: new Array(questions.length).fill(undefined),
+      messageIds,
     });
   };
 
+  const END_TURN =
+    'END YOUR TURN now — do not keep working, waiting, or guessing. The answer(s) will arrive as your next turn, and you continue from there.';
+
   const ask = tool(
     'ask',
-    'Ask ONE quick question with tappable options. Blocks until they choose, then returns the chosen option text. For richer decisions (several questions, or options that need a one-line explanation), use askUserQuestion instead.',
+    'Ask ONE quick question with tappable options, then END YOUR TURN. The chosen option arrives as your next turn (like a typed reply) — it does NOT block or return the answer inline. For richer decisions (several questions, or options needing a one-line explanation), use askUserQuestion.',
     {
       question: z.string(),
       options: z.array(z.string()).min(1).max(8).describe('Up to 8 short button labels'),
@@ -164,9 +200,8 @@ export function buildUiServer(view: RunningView) {
         'asked',
         `❓ <b>${escapeHtml(view.title)}</b> is waiting on a question — tap to answer.`,
       );
-      const choice = await askOne(args.question, args.options);
-      view.unblock();
-      return { content: [{ type: 'text' as const, text: choice }] };
+      await postAsk([{ question: args.question, options: args.options }]);
+      return { content: [{ type: 'text' as const, text: `Question posted to the user as tappable buttons. ${END_TURN}` }] };
     },
   );
 
@@ -202,36 +237,20 @@ export function buildUiServer(view: RunningView) {
           args.questions.length === 1 ? '' : 's'
         } — tap to answer.`,
       );
-      const answers: string[] = [];
-      for (const q of args.questions) {
-        const body = q.options
-          .map(
-            (o, i) =>
-              `\n${i + 1}. <b>${escapeHtml(o.label)}</b>${
-                o.description ? ` — ${escapeHtml(o.description)}` : ''
-              }`,
-          )
-          .join('');
-        const choice = await askOne(q.question, q.options.map((o) => o.label), body);
-        answers.push(`${q.header ?? q.question}: ${choice}`);
-      }
-      view.unblock();
-      return { content: [{ type: 'text' as const, text: answers.join('\n') }] };
-    },
-  );
-
-  const setMemoTool = tool(
-    'setMemo',
-    "Record or update this thread's memo — a short title and a 1-3 line status of what it's about and where it stands. The title labels this thread's button; the memo lets the thread be resumed if context is lost. Call it when the thread's purpose becomes clear or shifts, or after meaningful progress. Cheap and silent — use it freely.",
-    {
-      title: z.string().describe('Short thread label, ≤4 words (e.g. "Slovenia visa", "scraper bug")'),
-      summary: z
-        .string()
-        .describe('1-3 lines: what this thread is about and its current state / next step'),
-    },
-    async (args) => {
-      setMemo(view.chatId, view.slot, args.title.slice(0, 60), args.summary);
-      return { content: [{ type: 'text' as const, text: 'Memo saved.' }] };
+      await postAsk(
+        args.questions.map((q) => ({
+          question: q.question,
+          header: q.header,
+          options: q.options.map((o) => o.label),
+          body: q.options
+            .map((o, i) => `\n${i + 1}. <b>${escapeHtml(o.label)}</b>${o.description ? ` — ${escapeHtml(o.description)}` : ''}`)
+            .join(''),
+        })),
+      );
+      const n = args.questions.length;
+      return {
+        content: [{ type: 'text' as const, text: `Posted ${n} question${n === 1 ? '' : 's'} to the user as tappable buttons. ${END_TURN}` }],
+      };
     },
   );
 
@@ -254,6 +273,10 @@ export function buildUiServer(view: RunningView) {
     { key: z.string() },
     async (args) => {
       const note = getNote(args.key);
+      if (note) bumpRetrieval('note', note.key);
+      // A miss is friction on the API that exists today: the agent has just
+      // stated, unprompted and precisely, what it expected memory to hold.
+      else noteMiss('knowledge', 'readNote', args.key, view.key);
       return {
         content: [{ type: 'text' as const, text: note ? note.content : `No note "${args.key}".` }],
       };
@@ -264,20 +287,28 @@ export function buildUiServer(view: RunningView) {
     'saveFinding',
     "Persist a durable finding to the shared notes so it isn't re-derived later. Call when you've produced a substantial reusable answer (a mapped dependency chain, a how-it-works writeup) or when the user asks to save/remember something. Distill it: the conclusion plus key specifics (files, names, gotchas), self-contained — not the play-by-play. Reference related notes inline as [[their-key]].",
     {
-      key: z.string().describe('Short kebab-case slug, e.g. "affiliate-auth-blast-radius"'),
+      key: z.string().describe('kebab-case PATH key placing the note in the tree, e.g. "work/affiliate/auth-blast-radius" — match where similar notes live (see recallNotes)'),
       summary: z.string().describe('<=12 word index line — the question this answers'),
       content: z.string().describe('Distilled finding: conclusion + key specifics, self-contained'),
     },
     async (args) => {
-      upsertNote(args.key.slice(0, 60), args.summary.slice(0, 120), args.content);
-      return { content: [{ type: 'text' as const, text: `Saved finding "${args.key}" to notes.` }] };
+      let landed: string;
+      try {
+        landed = upsertNote(args.key, args.summary.slice(0, 120), args.content);
+      } catch (e) {
+        return { content: [{ type: 'text' as const, text: e instanceof Error ? e.message : String(e) }], isError: true };
+      }
+      const note = landed === args.key ? '' : ` — NOTE: your key "${args.key}" normalized to this`;
+      return { content: [{ type: 'text' as const, text: `Saved finding "${landed}" to notes${note}.` }] };
     },
   );
 
   return createSdkMcpServer({
+    // Never deferred behind tool search — see buildConciergeServer (2026-08-27).
+    alwaysLoad: true,
     name: 'telegram',
     version: '1.0.0',
     instructions: INSTRUCTIONS,
-    tools: [send, ask, askUserQuestion, setMemoTool, recallNotes, readNoteTool, saveFinding],
+    tools: [send, ask, askUserQuestion, recallNotes, readNoteTool, saveFinding],
   });
 }

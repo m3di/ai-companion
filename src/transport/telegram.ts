@@ -1,7 +1,13 @@
 import { autoRetry } from '@grammyjs/auto-retry';
+
+const SEND_TRIES = 3;
+const SEND_RETRY_MS = 2000;
 import { run, type RunnerHandle } from '@grammyjs/runner';
-import { Bot, type Context, InlineKeyboard } from 'grammy';
+import { Bot, type Context, InlineKeyboard, InputFile, HttpError } from 'grammy';
+import { writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { config } from '../config.js';
+import { voiceDir } from '../transcribe.js';
 import type {
   Buttons,
   ChatAdapter,
@@ -20,12 +26,19 @@ const COMMANDS: CommandSpec[] = [
   { command: 'process', description: 'Triage & fan out everything you captured' },
   { command: 'cancel', description: 'Stop all running work in this chat' },
   { command: 'repos', description: 'List, add, or scan your workspace repos' },
-  { command: 'dream', description: 'Offline self-reflection over recent activity' },
-  { command: 'dreams', description: 'List saved dream reflections (/dreams <id> for one)' },
-  { command: 'grow', description: 'Refine the knowledge base from recent reflections' },
+  { command: 'dream', description: 'Run the nightly rewrite now' },
+  { command: 'dreams', description: 'List nightly reports (/dreams <id> for one)' },
+
   { command: 'grows', description: 'List grow passes & what they changed (/grows <id>)' },
+  { command: 'episodes', description: 'Work harvested from your local Claude Code sessions' },
+  { command: 'find', description: 'Search past work — your sessions and the bot\'s threads' },
+  { command: 'distill', description: 'Summarise harvested work episodes into recaps' },
+  { command: 'focus', description: 'What deserves your attention now (ranked)' },
+  { command: 'commitments', description: 'Reminders, routines & watched items' },
+  { command: 'proposals', description: 'Operator-gated code/prompt proposals' },
   { command: 'stats', description: 'Usage & cost: workers, concierge, and the flywheel' },
   { command: 'status', description: 'Concierge + worker overview' },
+  { command: 'voice', description: 'The bot\'s voice: samples, pick one, set the pace' },
 ];
 
 function parseMode(format: MarkupFormat = 'tgHtml'): 'HTML' | 'MarkdownV2' | undefined {
@@ -39,7 +52,17 @@ function parseMode(format: MarkupFormat = 'tgHtml'): 'HTML' | 'MarkdownV2' | und
   }
 }
 
+/**
+ * `undefined` means "no opinion"; an EMPTY array means "clear the keyboard".
+ *
+ * The distinction only matters on edit, and it mattered silently: Telegram
+ * leaves the existing keyboard alone when `reply_markup` is omitted, so a live
+ * status box that finished with no keyboard kept its 🛑 Stop button forever —
+ * a button that, once the turn was over, could only ever answer "Nothing
+ * running". Returning an empty inline keyboard is what actually removes it.
+ */
 function toKeyboard(buttons?: Buttons): InlineKeyboard | undefined {
+  if (buttons?.length === 0) return new InlineKeyboard();
   if (!buttons?.length) return undefined;
   const kb = new InlineKeyboard();
   for (const row of buttons) {
@@ -77,8 +100,23 @@ export class TelegramAdapter implements ChatAdapter {
   private handler?: (e: Inbound) => void | Promise<void>;
 
   constructor() {
-    this.bot = new Bot(config.telegramToken);
-    this.bot.api.config.use(autoRetry());
+    // A request that hangs (a keep-alive socket dead after sleep or a network
+    // change) fails in a minute, not grammy's default 500 s. The long poll
+    // asks Telegram for 30 s, so 60 leaves it room.
+    this.bot = new Bot(config.telegramToken, { client: { timeoutSeconds: 60 } });
+    // BOUNDED — in BOTH of autoRetry's loops. maxRetryAttempts bounds only the
+    // rate-limit / 5xx loop; a NETWORK error (HttpError: fetch threw, or the
+    // request timed out) is retried in a separate loop that the attempt count
+    // never touches — 3 s, 6, 12 … doubling to a one-hour cap, FOREVER, and the
+    // caller awaits it. On 2026-08-27 the concierge's status message entered
+    // that loop and held the session lock for two hours while every message
+    // queued behind it with an eyes reaction; the fix that day bounded the
+    // wrong loop. On 2026-11-08 six requests were found asleep in hour-long
+    // waits while the concierge answered nothing all day. `rethrowHttpErrors`
+    // closes the second loop: a network failure throws at once, `send` below
+    // retries it a bounded three times, and a turn whose box cannot be sent
+    // fails and releases its lock — the queue moves on (I8).
+    this.bot.api.config.use(autoRetry({ maxRetryAttempts: 3, maxDelaySeconds: 30, rethrowHttpErrors: true }));
     this.bindHandlers();
   }
 
@@ -87,8 +125,19 @@ export class TelegramAdapter implements ChatAdapter {
   }
 
   async send(chatId: number, msg: OutgoingMessage): Promise<MessageRef> {
-    const sent = await this.bot.api.sendMessage(chatId, msg.text, sendOptions(msg));
-    return { chatId, messageId: sent.message_id };
+    // Three tries, a few seconds apart, then the error reaches the caller: a
+    // turn's box is the one Telegram call a turn awaits, so this is where a
+    // network blip is forgiven and a network outage is reported (I8).
+    for (let attempt = 1; ; attempt++) {
+      try {
+        const sent = await this.bot.api.sendMessage(chatId, msg.text, sendOptions(msg));
+        return { chatId, messageId: sent.message_id };
+      } catch (e) {
+        if (!(e instanceof HttpError) || attempt >= SEND_TRIES) throw e;
+        console.warn(`[telegram] sendMessage failed (${e.message}) — retry ${attempt}/${SEND_TRIES - 1} in ${SEND_RETRY_MS * attempt}ms`);
+        await new Promise((r) => setTimeout(r, SEND_RETRY_MS * attempt));
+      }
+    }
   }
 
   async edit(ref: MessageRef, msg: OutgoingMessage): Promise<void> {
@@ -109,6 +158,12 @@ export class TelegramAdapter implements ChatAdapter {
     await this.bot.api.sendChatAction(chatId, 'typing').catch(() => {});
   }
 
+  async sendVoice(chatId: number, path: string, caption?: string): Promise<MessageRef> {
+    await this.bot.api.sendChatAction(chatId, 'record_voice').catch(() => {});
+    const sent = await this.bot.api.sendVoice(chatId, new InputFile(path), caption ? { caption } : undefined);
+    return { chatId, messageId: sent.message_id };
+  }
+
   /** Wire the access gate and translate grammy updates into Inbound events. */
   private bindHandlers(): void {
     // Access control: only allow-listed chats may drive the bot.
@@ -125,6 +180,7 @@ export class TelegramAdapter implements ChatAdapter {
     });
 
     this.bot.on('message:text', (ctx) => this.emitMessage(ctx));
+    this.bot.on('message:voice', (ctx) => void this.emitVoice(ctx));
     this.bot.on('callback_query:data', (ctx) => this.emitCallback(ctx));
     this.bot.catch((err) => console.error('[bot] error', err));
   }
@@ -152,6 +208,39 @@ export class TelegramAdapter implements ChatAdapter {
       messageId,
       replyToMessageId: ctx.message.reply_to_message?.message_id,
     });
+  }
+
+  /**
+   * A voice note: fetch the audio (free on every Telegram account — only the
+   * transcription is Premium, and we do not use theirs) and hand the file over.
+   * The link Telegram issues is good for an hour; the file goes under data/.
+   */
+  private async emitVoice(ctx: Context): Promise<void> {
+    const voice = ctx.message?.voice;
+    if (!this.handler || ctx.chat === undefined || !voice) return;
+    const chatId = ctx.chat.id;
+    const messageId = ctx.message!.message_id;
+    try {
+      const file = await ctx.getFile();
+      if (!file.file_path) throw new Error('Telegram returned no file_path');
+      const res = await fetch(`https://api.telegram.org/file/bot${config.telegramToken}/${file.file_path}`);
+      if (!res.ok) throw new Error(`download failed: HTTP ${res.status}`);
+      const ext = file.file_path.split('.').pop() || 'oga';
+      const path = join(voiceDir(), `${chatId}-${messageId}.${ext}`);
+      writeFileSync(path, Buffer.from(await res.arrayBuffer()));
+      void this.handler({
+        kind: 'message',
+        chatId,
+        userId: ctx.from?.id,
+        text: '',
+        messageId,
+        replyToMessageId: ctx.message?.reply_to_message?.message_id,
+        voice: { path, durationSec: voice.duration },
+      });
+    } catch (err) {
+      console.error('[telegram] voice note not fetched', err);
+      await this.send(chatId, { text: `Could not fetch that voice note: ${err instanceof Error ? err.message : String(err)}`, format: 'plain' }).catch(() => {});
+    }
   }
 
   private emitCallback(ctx: Context): void {

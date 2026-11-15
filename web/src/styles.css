@@ -1,0 +1,1333 @@
+/* The Atlas is a dark instrument on purpose: every effect in it is light —
+   halos, travelling particles, cluster washes — and light needs somewhere dark
+   to happen. There is no light theme because there is no light version of a
+   glow. */
+
+:root {
+  --bg: #07080c;
+  --ink: #e8ecf5;
+  --muted: #7c88a0;
+  --edge: #1c2130;
+  --panel: #0d1017f0;
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--ink);
+  font: 13px/1.5 ui-sans-serif, system-ui, -apple-system, sans-serif;
+  overflow: hidden;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+
+.atlas {
+  position: relative;
+  height: 100%;
+}
+
+.fatal {
+  display: grid;
+  place-content: center;
+  gap: 12px;
+  height: 100%;
+  text-align: center;
+}
+.fatal pre {
+  max-width: 70ch;
+  white-space: pre-wrap;
+  color: #ff8f8f;
+}
+.fatal button {
+  border: 1px solid var(--edge);
+  border-radius: 6px;
+  padding: 6px 14px;
+}
+
+/* --- chrome ------------------------------------------------------------- */
+
+.chrome {
+  position: absolute;
+  z-index: 5;
+  background: var(--panel);
+  border: 1px solid var(--edge);
+  border-radius: 10px;
+  backdrop-filter: blur(8px);
+}
+
+.top {
+  top: 12px;
+  left: 12px;
+  right: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 8px 12px;
+}
+
+.crumbs {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.crumbs .sep {
+  color: var(--muted);
+  margin: 0 6px;
+}
+.crumbs button {
+  color: var(--muted);
+}
+.crumbs button:hover {
+  color: var(--ink);
+}
+.crumbs .here {
+  color: var(--ink);
+  font-weight: 600;
+  cursor: default;
+}
+
+.top .right {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  color: var(--muted);
+}
+.top .right button {
+  color: var(--muted);
+}
+.top .right button:hover {
+  color: var(--ink);
+}
+.live::before,
+.dead::before {
+  content: '';
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: #35d07f;
+}
+.dead::before {
+  background: #c9553d;
+}
+.warn {
+  color: #ffb454;
+}
+
+/* THE MODE CHIP — what the machine is doing, and the way to change it.
+   Loud enough to be read without looking for it, because a sedated bot that
+   looks live is how a day gets silently lost. */
+.mode-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 11px;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  cursor: pointer;
+}
+.mode-chip .dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  /* The DOT is the live feed, the LABEL is the work state — two facts that sat
+     side by side as two chips both reading "live", which made one of them look
+     redundant and told you neither which was which. */
+  background: currentColor;
+}
+.mode-chip .dot.off {
+  background: #c9553d;
+  box-shadow: 0 0 0 2px rgb(201 85 61 / 0.25);
+}
+.mode-chip .chip-sub {
+  font-weight: 500;
+  letter-spacing: 0;
+  opacity: 0.65;
+}
+.mode-chip.m-live {
+  color: #35d07f;
+}
+.mode-chip.m-debug {
+  color: #ffb454;
+}
+/* THE BAR CARRIES THE WORK STATE.
+   Grey belongs to the ledger — it means "the graph is evidence for this run" —
+   so the fact that writes are ALLOWED needed a signal of its own rather than
+   borrowing that one. Tying them together broke the ledger: reading a run while
+   the bot was live left the graph in full colour, and the footprint highlight
+   was invisible against twelve hues. */
+.top.mode-debug {
+  border-color: rgb(255 180 84 / 0.5);
+  box-shadow: 0 0 0 1px rgb(255 180 84 / 0.18), 0 6px 28px rgb(255 180 84 / 0.09);
+}
+.top.mode-dreaming {
+  border-color: rgb(157 139 255 / 0.5);
+  box-shadow: 0 0 0 1px rgb(157 139 255 / 0.18), 0 6px 28px rgb(157 139 255 / 0.09);
+}
+
+/* Dreaming stopped being the one state with nothing to click the day the fold
+   became mandatory: a thing the day WAITS for has to be refusable. */
+.mode-chip.m-dreaming {
+  color: #9d8bff;
+}
+/* An owed night wears the dream's colour, because the day is held either way —
+   the label says which of the two it is. */
+.mode-chip.m-owed {
+  color: #9d8bff;
+}
+.mode-chip.m-owed .dot,
+.mode-chip.m-dreaming .dot,
+.mode-chip.m-debug .dot {
+  animation: chip-breathe 2.6s ease-in-out infinite;
+}
+@keyframes chip-breathe {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.25; }
+}
+
+.mode-sheet {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  background: rgb(0 0 0 / 0.55);
+  backdrop-filter: blur(3px);
+}
+.mode-card {
+  width: min(440px, 90vw);
+  padding: 20px 22px;
+  border: 1px solid var(--edge);
+  border-radius: 12px;
+  background: #0d1017;
+  box-shadow: 0 20px 60px rgb(0 0 0 / 0.6);
+}
+.mode-card h3 {
+  margin: 0 0 10px;
+  font-size: 15px;
+}
+.mode-card p {
+  margin: 0 0 14px;
+  color: var(--muted);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+.mode-card input {
+  width: 100%;
+  padding: 8px 10px;
+  margin-bottom: 14px;
+  border: 1px solid var(--edge);
+  border-radius: 6px;
+  background: rgb(255 255 255 / 0.04);
+  color: var(--ink);
+  font: inherit;
+  font-size: 12.5px;
+}
+.mode-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.mode-actions button {
+  padding: 6px 13px;
+  border: 1px solid var(--edge);
+  border-radius: 6px;
+  color: var(--ink);
+  font-size: 12px;
+  cursor: pointer;
+}
+.mode-actions button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.mode-actions button.ghost {
+  border-color: transparent;
+  color: var(--muted);
+}
+.mode-actions button.danger {
+  color: #e58a7a;
+  border-color: rgb(229 138 122 / 0.4);
+}
+.mode-error {
+  margin-top: 12px;
+  color: #e58a7a;
+  font-size: 12px;
+}
+.toggle {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  cursor: pointer;
+}
+
+.back {
+  bottom: 16px;
+  /* Clear the run panel. At left:16px it sat UNDER the sidebar, which is the
+     one place a back button must never be. */
+  left: calc(16px + var(--panel, 0px));
+  padding: 7px 14px;
+  transition: left .15s ease;
+}
+.back:hover {
+  color: #fff;
+}
+
+/* --- domain labels ------------------------------------------------------ */
+
+.domain-labels {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  /* The layer is inert; only the buttons inside it take the pointer, so the
+     canvas underneath keeps every drag and wheel gesture. */
+  pointer-events: none;
+}
+
+.domain-label {
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: grid;
+  gap: 1px;
+  padding: 4px 10px 5px;
+  border-radius: 8px;
+  text-align: center;
+  line-height: 1.25;
+  white-space: nowrap;
+  opacity: 0;
+  transition: background-color 0.15s, opacity 0.25s;
+  will-change: transform;
+}
+.domain-label:hover {
+  background: #ffffff14;
+}
+.domain-label .name {
+  font-size: 15px;
+  font-weight: 600;
+}
+.domain-label .count {
+  font-size: 11px;
+  opacity: 0.6;
+}
+
+/* --- ticker ------------------------------------------------------------- */
+
+.ticker {
+  top: 62px;
+  right: 12px;
+  width: 380px;
+  max-height: 46vh;
+  overflow: hidden;
+  padding: 8px 10px;
+  font-size: 11.5px;
+}
+.ticker .row {
+  display: grid;
+  grid-template-columns: 9px 54px 74px 1fr;
+  gap: 6px;
+  align-items: baseline;
+  padding: 2.5px 0;
+  color: var(--muted);
+}
+.ticker .row.loud {
+  color: var(--ink);
+}
+.ticker .dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  transform: translateY(1px);
+}
+.ticker time {
+  font-variant-numeric: tabular-nums;
+  opacity: 0.7;
+}
+.ticker .kind {
+  opacity: 0.85;
+}
+.ticker .text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ticker .ref {
+  margin-left: 6px;
+  color: #7fd8ff;
+  text-decoration: underline dotted;
+}
+
+/* --- hover peek --------------------------------------------------------- */
+
+.peek {
+  bottom: 16px;
+  right: 12px;
+  width: 380px;
+  padding: 10px 12px;
+  display: grid;
+  gap: 4px;
+}
+.peek strong {
+  font-size: 13px;
+}
+.peek .state {
+  color: #ffd479;
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+}
+.peek p {
+  margin: 2px 0 0;
+  color: var(--muted);
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+/* --- modal -------------------------------------------------------------- */
+
+.scrim {
+  position: fixed;
+  inset: 0;
+  /* Above the run panel (40): opening a node from the ledger must put the node
+     in front of the ledger, not behind it. */
+  z-index: 50;
+  background: #04050899;
+  display: grid;
+  place-items: center;
+  padding: 5vh 16px;
+}
+.modal {
+  position: relative;
+  width: min(760px, 100%);
+  max-height: 90vh;
+  overflow: auto;
+  padding: 22px 26px 28px;
+  background: #0c0f16;
+  border: 1px solid var(--edge);
+  border-radius: 14px;
+}
+.modal .x {
+  position: absolute;
+  top: 12px;
+  right: 14px;
+  color: var(--muted);
+}
+.modal h2 {
+  margin: 0 0 10px;
+  font-size: 17px;
+  font-family: ui-monospace, monospace;
+}
+.modal h3 {
+  margin: 20px 0 6px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+.modal ul {
+  margin: 0;
+  padding-left: 18px;
+}
+.modal li {
+  margin: 3px 0;
+}
+.modal section pre {
+  margin: 0;
+  padding: 8px 10px;
+  background: #11151f;
+  border-radius: 7px;
+  white-space: pre-wrap;
+  font-size: 12px;
+  color: #ffd479;
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.chip {
+  padding: 2px 9px;
+  border: 1px solid var(--edge);
+  border-radius: 999px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.chip.open {
+  border-color: #2e7d5b;
+  color: #6fe0ad;
+}
+.chip.closed {
+  opacity: 0.6;
+}
+.chip.actor {
+  border-color: #7b6320;
+  color: #ffd479;
+}
+.chip.goal {
+  border-color: #6a3f8f;
+  color: #d3a8ff;
+}
+.chip.aka {
+  font-family: ui-monospace, monospace;
+  opacity: 0.75;
+}
+
+.rel {
+  display: grid;
+  grid-template-columns: 130px 1fr;
+  gap: 8px;
+  padding: 2px 0;
+}
+.rel-name {
+  color: var(--muted);
+  font-size: 11.5px;
+}
+.link {
+  color: #7fd8ff;
+  padding: 0 7px 0 0;
+  text-decoration: underline dotted;
+}
+.stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.trace {
+  font-family: ui-monospace, monospace;
+  font-size: 11.5px;
+  word-break: break-all;
+}
+.trace a {
+  color: #7fd8ff;
+}
+
+/* --- Private domains (view-only; see src/privacy.ts) --------------------- */
+
+/* The curtain a private node opens to. Centred and short on purpose: it is a
+   stop, not a page, and the only thing to read is the one button. */
+.curtain {
+  padding: 26px 8px 12px;
+  text-align: center;
+}
+.curtain h2 {
+  font-size: 22px;
+  letter-spacing: 0.12em;
+}
+.curtain p {
+  max-width: 46ch;
+  margin: 0 auto 18px;
+}
+.curtain .small {
+  font-size: 11px;
+  margin-top: 14px;
+}
+.reveal {
+  padding: 8px 18px;
+  color: #cfe6ff;
+  background: #14233a;
+  border: 1px solid #27446e;
+  border-radius: 8px;
+}
+.reveal:hover {
+  background: #1b2f4e;
+}
+
+.settings h3 .muted {
+  text-transform: none;
+  letter-spacing: 0;
+}
+.domain-settings {
+  list-style: none;
+  padding: 0;
+  margin: 12px 0 0;
+}
+.domain-settings li {
+  display: grid;
+  /* name · counts · action — the action column is fixed so the buttons form a
+     single edge to run down, which is how a settings list is scanned. */
+  grid-template-columns: 1fr auto 96px;
+  align-items: center;
+  gap: 14px;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--edge);
+}
+.domain-settings .dname {
+  font-family: ui-monospace, monospace;
+  font-size: 13px;
+}
+.domain-settings .lock {
+  margin-right: 6px;
+}
+.domain-settings button {
+  padding: 4px 0;
+  width: 100%;
+  color: var(--muted);
+  background: #10141d;
+  border: 1px solid var(--edge);
+  border-radius: 6px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.domain-settings button:hover {
+  color: #dfe7f5;
+}
+.domain-settings button.on {
+  color: #ffd9a0;
+  background: #241a0e;
+  border-color: #5a4020;
+}
+
+/* The ticker folds away: the graph is what the page is for. */
+.ticker .bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: -2px 0 4px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.ticker .fold,
+.ticker.collapsed .chev {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1;
+  padding: 2px 4px;
+}
+.ticker .fold:hover {
+  color: var(--ink);
+}
+.ticker.collapsed {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: auto;
+  max-height: none;
+  padding: 6px 10px;
+  cursor: pointer;
+}
+.ticker.collapsed:hover {
+  color: var(--ink);
+}
+
+
+/* THE STAGE — the canvas's own box.
+   Offset, not merely narrowed: shrinking the canvas alone left it starting at
+   x=0 and therefore still under the panel. DomainLabels shares this box because
+   it positions from canvas-relative coordinates. */
+.stage { position: absolute; top: 0; bottom: 0; }
+
+/* THE RUN LEDGER — a working surface, not an overlay.
+   Open, it owns the left third and the graph becomes evidence: the canvas is
+   pushed right so nothing is hidden UNDER the panel, because a footprint you
+   cannot see is not a footprint. */
+.chrome .right button.on {
+  background: rgba(95,191,176,.18);
+  color: #5fbfb0;
+  border-color: rgba(95,191,176,.4);
+}
+
+.runs-panel {
+  position: fixed; left: 0; top: 0; bottom: 0; z-index: 40;
+  width: min(430px, 34vw);
+  display: flex; flex-direction: column;
+  background: rgba(10,10,13,.96);
+  border-right: 1px solid rgba(255,255,255,.12);
+  font: 11px/1.55 ui-monospace, monospace; color: #cfcfd4;
+  backdrop-filter: blur(8px);
+}
+.runs-head {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 10px 12px; border-bottom: 1px solid rgba(255,255,255,.1);
+  color: #8a8a92; letter-spacing: .04em; flex: none;
+}
+.runs-head button { background: none; border: 0; color: #8a8a92; cursor: pointer; font-size: 16px; }
+.runs-list { overflow-y: auto; flex: 1; }
+.runs-empty { padding: 14px 12px; color: #71717a; }
+
+.run {
+  border-bottom: 1px solid rgba(255,255,255,.06);
+  padding-bottom: 6px;
+  /* The open row grows a rail on its left edge; every other row reserves the
+     same space so opening one does not shove the text sideways. */
+  border-left: 2px solid transparent;
+}
+.run:hover { background: rgba(255,255,255,.03); }
+/* EXACTLY ONE ROW IS EVER OPEN, so it can afford to look it. A 5% tint was
+   indistinguishable from the 3% hover tint two pixels away, which meant the
+   panel gave no answer to "which one am I reading" — the rail, the brighter
+   ground and the lifted prompt are three signals for one fact, and they are
+   readable at a glance from across the room. */
+.run-open {
+  background: rgba(95,191,176,.09);
+  border-left-color: #5fbfb0;
+}
+.run-open .run-prompt { color: var(--ink); }
+.run-open:hover { background: rgba(95,191,176,.11); }
+/* An unclosed run is the one thing here that needs chasing: it keeps claiming
+   later writes for an attempt that is over. */
+.run-live { border-left-color: #e8a33d; }
+
+.run-row {
+  display: flex; gap: 8px; align-items: center; width: 100%;
+  padding: 9px 12px 3px 12px; background: none; border: 0; cursor: pointer;
+  font: inherit; color: inherit; text-align: left;
+}
+.run-row:hover { background: rgba(255,255,255,.05); }
+.run-row .chev { color: #6a6a72; flex: none; line-height: 1.5; }
+.run-row:hover .chev { color: #5fbfb0; }
+.run-open .run-row .chev { color: #5fbfb0; }
+.run-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+.run-meta { display: flex; gap: 8px; align-items: baseline; }
+.run-id { color: #71717a; }
+.run-trigger { font-size: 9px; padding: 1px 6px; border-radius: 3px; letter-spacing: .05em; }
+.t-linter { background: rgba(95,191,176,.16); color: #5fbfb0; }
+.t-prompt { background: rgba(176,122,214,.16); color: #b07ad6; }
+.t-schedule { background: rgba(255,255,255,.08); color: #8a8a92; }
+.run-count { margin-left: auto; color: #71717a; font-size: 10px; }
+.run-prompt {
+  color: #cfcfd4; padding: 0 12px 8px 32px; cursor: text;
+  user-select: text; white-space: pre-wrap;
+}
+
+.run-body { padding: 4px 12px 8px 12px; }
+.run-write { margin: 9px 0; padding: 4px 6px; border-radius: 4px; cursor: default; }
+.run-write:hover { background: rgba(140,240,180,.07); }
+.run-write-top { display: flex; gap: 7px; align-items: baseline; }
+.run-write .op { font-size: 10px; }
+.run-write .node {
+  background: none; border: 0; padding: 0; cursor: pointer;
+  color: #9fc3e8; text-decoration: underline dotted; font: inherit; text-align: left;
+}
+.run-write:hover .node { color: #7ee8a4; }
+.run-write .why { color: #8a8a92; margin-top: 3px; }
+.run-outcome {
+  margin-top: 10px; padding-top: 8px; border-top: 1px dashed rgba(255,255,255,.12);
+  color: #a8a8b0; white-space: pre-wrap;
+}
+
+/* COMPOSING THE NEXT RUN, above the record of every previous one — you write
+   the next instruction while reading what the last one did. */
+.runs-new { padding: 10px 12px; border-bottom: 1px solid rgba(255,255,255,.1); flex: none; }
+.runs-new textarea {
+  width: 100%; resize: vertical; box-sizing: border-box;
+  background: rgba(0,0,0,.35); color: #cfcfd4;
+  border: 1px solid rgba(255,255,255,.14); border-radius: 5px;
+  padding: 7px 9px; font: 11px/1.5 ui-monospace, monospace;
+}
+.runs-new textarea:focus { outline: none; border-color: rgba(95,191,176,.55); }
+.runs-new textarea:disabled { opacity: .55; cursor: not-allowed; }
+.runs-new-actions { display: flex; gap: 7px; margin-top: 7px; }
+.runs-new-actions button {
+  background: rgba(95,191,176,.14); color: #5fbfb0;
+  border: 1px solid rgba(95,191,176,.35); border-radius: 5px;
+  padding: 4px 11px; font: 11px ui-monospace, monospace; cursor: pointer;
+}
+.runs-new-actions button:hover:not(:disabled) { background: rgba(95,191,176,.24); }
+.runs-new-actions button:disabled { opacity: .4; cursor: not-allowed; }
+.runs-notice { margin-top: 8px; color: #e8a33d; }
+/* Says what the composer can do, where the composer is — not in a tooltip on a
+   disabled box. */
+.runs-readonly {
+  margin-top: 8px;
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+/* THE LIVE TURN. Sits between the prompt box and the ledger — the present
+   tense between what you are about to ask and what was asked before. */
+.turn {
+  flex: none;
+  max-height: 46vh;
+  overflow-y: auto;
+  padding: 10px 12px;
+  border-bottom: 1px solid rgba(255,255,255,.1);
+  background: rgba(255,255,255,.02);
+}
+.turn-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+  font-size: 10.5px;
+  letter-spacing: .07em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.turn-head button {
+  padding: 2px 8px;
+  border: 1px solid rgba(255,255,255,.16);
+  border-radius: 5px;
+  color: var(--muted);
+  font-size: 10.5px;
+  cursor: pointer;
+}
+.turn-head button:hover { color: var(--ink); }
+/* A running turn breathes; a finished one does not. The difference has to be
+   visible from across the room, because the whole question this panel answers
+   while it is open is "is it still going?" */
+.turn.t-running .turn-head { color: #5fbfb0; }
+.turn.t-running .turn-head::before {
+  content: '';
+  width: 6px; height: 6px;
+  margin-right: 7px;
+  border-radius: 50%;
+  background: #5fbfb0;
+  animation: chip-breathe 1.8s ease-in-out infinite;
+}
+.turn.t-error .turn-head { color: #e58a7a; }
+.turn-steps {
+  margin-bottom: 9px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10.5px;
+  line-height: 1.75;
+  color: rgba(255,255,255,.42);
+}
+.turn-step { cursor: default; }
+.turn-step:hover { color: hsl(140 90% 62%); }
+/* The answer is prose and is selectable: it is the thing you copy into the
+   next prompt, or into a commit message. */
+.turn-text {
+  font-size: 12px;
+  line-height: 1.62;
+  white-space: pre-wrap;
+  color: var(--ink);
+  user-select: text;
+}
+.turn-wait { font-size: 11.5px; color: var(--muted); font-style: italic; }
+
+/* A PLAN WAITING ON A DECISION. The one thing in this panel that is not a
+   record of something — it is a question, and it should look like one. */
+.proposal {
+  margin-top: 12px;
+  padding: 10px 11px;
+  border: 1px solid rgba(95,191,176,.42);
+  border-radius: 8px;
+  background: rgba(95,191,176,.07);
+}
+.proposal-head {
+  font-size: 10px;
+  letter-spacing: .09em;
+  text-transform: uppercase;
+  color: #5fbfb0;
+  margin-bottom: 5px;
+}
+.proposal-summary { font-size: 12.5px; line-height: 1.5; margin-bottom: 7px; }
+.proposal-steps {
+  margin: 0 0 10px;
+  padding-left: 16px;
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--muted);
+}
+.proposal-actions { display: flex; justify-content: flex-end; gap: 7px; }
+.proposal-actions button {
+  padding: 4px 14px;
+  border: 1px solid rgba(95,191,176,.5);
+  border-radius: 6px;
+  background: rgba(95,191,176,.18);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+.proposal-actions button:hover:not(:disabled) { background: rgba(95,191,176,.3); }
+.proposal-actions button.ghost {
+  border-color: rgba(255,255,255,.14);
+  background: none;
+  color: var(--muted);
+}
+.proposal-actions button:disabled { opacity: .4; cursor: not-allowed; }
+.turn-error { margin-top: 8px; font-size: 11.5px; color: #e58a7a; }
+
+.run-revert {
+  margin-top: 10px; background: rgba(201,106,106,.12); color: #c96a6a;
+  border: 1px solid rgba(201,106,106,.3); border-radius: 4px;
+  padding: 3px 9px; font: 10px ui-monospace, monospace; cursor: pointer;
+}
+.run-revert:hover:not(:disabled) { background: rgba(201,106,106,.22); }
+.run-revert:disabled { opacity: .35; cursor: not-allowed; }
+
+.runs-new-actions button.ghost {
+  background: none; color: #8a8a92; border-color: rgba(255,255,255,.16);
+}
+.runs-new-actions button.ghost:hover:not(:disabled) { background: rgba(255,255,255,.06); }
+.run-outcome-label {
+  color: #5fbfb0; font-size: 9px; letter-spacing: .08em; margin-bottom: 5px;
+}
+
+.run-read { margin-top: 10px; padding-top: 8px; border-top: 1px dashed rgba(255,255,255,.1); }
+.run-read .node {
+  display: block; background: none; border: 0; padding: 1px 0; cursor: pointer;
+  color: #8fa8bd; font: inherit; text-align: left;
+}
+.run-read .node:hover { color: #7ee8a4; }
+
+/* ── CONTEXT LENSES ────────────────────────────────────────────────────────
+   Every list the system keeps, drawn the way the run ledger proved: rows on
+   the left, the graph as evidence for whatever is under the pointer. Shares
+   the ledger's geometry deliberately — two panels with different shapes for
+   the same gesture teach two habits for one idea. */
+.lens {
+  position: fixed; left: 0; top: 0; bottom: 0; z-index: 40;
+  width: min(400px, 32vw);
+  display: flex; flex-direction: column;
+  background: rgba(10,10,13,.96);
+  border-right: 1px solid rgba(255,255,255,.12);
+  font: 11px/1.55 ui-monospace, monospace; color: #cfcfd4;
+  backdrop-filter: blur(8px);
+}
+.lens-head {
+  display: flex; justify-content: space-between; align-items: baseline; gap: 8px;
+  padding: 10px 12px; border-bottom: 1px solid rgba(255,255,255,.1);
+  color: #8a8a92; letter-spacing: .04em; flex: none;
+}
+.lens-count { font-size: 10px; }
+/* Stated, never hidden: a row that points at nothing is the STORE reporting a
+   gap, not the panel failing to draw one. */
+.lens-blind { color: #d4813f; }
+.lens-hint { margin: 0; padding: 8px 12px; color: #7c8494; border-bottom: 1px solid rgba(255,255,255,.06); }
+.lens-error { padding: 8px 12px; color: #e0654f; }
+.lens-rows { overflow-y: auto; flex: 1; }
+
+.lens-row {
+  padding: 8px 12px 9px;
+  border-bottom: 1px solid rgba(255,255,255,.05);
+  border-left: 2px solid transparent;
+  cursor: pointer;
+}
+.lens-row:hover { background: rgba(255,255,255,.035); }
+.lens-open { background: rgba(95,191,176,.09); border-left-color: #5fbfb0; }
+/* A row with nothing to light is dimmed rather than hidden — the dead list IS
+   the finding when a store carries no refs. */
+.lens-dark .lens-title > span:first-child { color: #8b93a7; }
+.t-changed { border-left-color: rgba(232,163,61,.35); }
+.t-read    { border-left-color: rgba(95,191,176,.3); }
+.t-missing { border-left-color: rgba(139,147,167,.3); }
+
+.lens-title { display: flex; justify-content: space-between; gap: 8px; color: #e6e6ea; }
+.lens-when { color: #6f7788; flex: none; font-size: 10px; }
+.lens-sub { color: #98a0b0; margin-top: 3px; max-height: 2.9em; overflow: hidden; }
+.lens-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; }
+.lens-tag {
+  font-size: 9px; padding: 1px 5px; border-radius: 3px;
+  background: rgba(255,255,255,.06); color: #8b93a7;
+}
+.lens-refs { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; }
+.lens-ref {
+  font: inherit; font-size: 9px; padding: 1px 5px; border-radius: 3px; cursor: pointer;
+  background: rgba(95,191,176,.14); color: #7fd4c5; border: 1px solid rgba(95,191,176,.28);
+}
+.lens-ref:hover { background: rgba(95,191,176,.26); }
+/* A NAME THE GRAPH CANNOT ANSWER TO. Not a button — there is nothing to open,
+   and that is the point: 85 of these in the inbox is 85 missing concepts. */
+.lens-ghost {
+  font-size: 9px; padding: 1px 5px; border-radius: 3px;
+  background: transparent; color: #8b93a7;
+  border: 1px dashed rgba(139,147,167,.45);
+}
+.lens-domain {
+  font-size: 9px; padding: 1px 5px; border-radius: 3px;
+  background: rgba(139,147,167,.1); color: #a4abbb; border: 1px solid rgba(139,147,167,.25);
+}
+
+/* --- life (proposal #7) ------------------------------------------------- */
+/* Lane hues validated as a set on the dark panel (dataviz validator, all
+   checks pass): blue, aqua, violet, orange. Status colours are reserved and
+   always ship with an icon and a word. Text never wears a series colour. */
+
+.life {
+  --t1: #3987e5;
+  --t2: #199e70;
+  --work: #9085e9;
+  --session: #d95926;
+  --warn: #fab219;
+  --crit: #d03b3b;
+  --grid: #1c2130;
+  --lane-label: 132px;
+  --lane-side: 220px;
+  position: absolute;
+  z-index: 4;
+  top: 66px;
+  left: 12px;
+  right: 12px;
+  bottom: 12px;
+  overflow-y: auto;
+  padding: 20px 24px 32px;
+  background: #0b0d13;
+  border: 1px solid var(--edge);
+  border-radius: 10px;
+}
+.life h1 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 600;
+}
+.life h2 {
+  margin: 28px 0 10px;
+  font-size: 14px;
+  font-weight: 600;
+}
+.life h2 .muted {
+  font-weight: 400;
+  margin-left: 6px;
+}
+.life .muted {
+  color: var(--muted);
+}
+.life .small {
+  font-size: 12px;
+}
+.life-empty {
+  color: var(--muted);
+}
+.life-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.life-head p {
+  margin: 4px 0 0;
+}
+/* marks */
+.life .dot {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  box-shadow: 0 0 0 2px #0b0d13; /* the surface ring */
+  vertical-align: middle;
+}
+.life .dot.t1 { background: var(--t1); }
+.life .dot.t2 { background: var(--t2); }
+.life .key {
+  display: inline-block;
+  width: 12px;
+  height: 4px;
+  border-radius: 2px;
+  margin-right: 8px;
+  vertical-align: middle;
+}
+.life .key.t1 { background: var(--t1); }
+.life .key.t2 { background: var(--t2); }
+.life .key.work { background: var(--work); }
+.life .key.session { background: var(--session); }
+.life .key.session.absence { background: repeating-linear-gradient(135deg, var(--session) 0 3px, transparent 3px 6px); height: 8px; }
+.life .status {
+  font-size: 12px;
+  font-weight: 500;
+  margin-left: 10px;
+  color: var(--ink);
+}
+.life .status .ico { font-style: normal; }
+.life .status.crit .ico { color: var(--crit); }
+.life .status.warn { margin-left: 0; }
+.life .status.warn .ico { color: var(--warn); }
+
+/* a row of widgets above full-width lines */
+.life-widgets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 16px;
+}
+.life-widgets > .tile {
+  flex: 1 1 240px;
+}
+.life-top {
+  margin-top: 22px;
+}
+.life .tile {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 14px;
+  border: 1px solid var(--grid);
+  border-radius: 8px;
+  min-width: 0;
+}
+.life .tile .k {
+  font-size: 12px;
+  color: var(--muted);
+}
+.life .tile .v {
+  font-size: 26px;
+  font-weight: 600;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+}
+.life .bullets {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+}
+.life-meter {
+  position: relative;
+  height: 8px;
+  border-radius: 4px;
+  background: var(--grid);
+  margin: 4px 0;
+}
+.life-meter .fill {
+  height: 100%;
+  border-radius: 4px;
+  background: var(--t2);
+}
+.life-meter .fill.low { background: var(--crit); }
+.life-meter .tick {
+  position: absolute;
+  top: -4px;
+  bottom: -4px;
+  width: 1px;
+  background: var(--muted);
+}
+.life-meter .tick.target { background: var(--ink); }
+.life .legend {
+  margin-left: 10px;
+  font-size: 12px;
+}
+.life .legend .mk {
+  position: static;
+  display: inline-block;
+  vertical-align: middle;
+  margin: 0 4px 0 10px;
+  transform: none;
+}
+
+/* a day: one line, items on it */
+.dayline {
+  padding: 8px 0 4px;
+  border-top: 1px solid var(--grid);
+}
+.dayline.big {
+  border-top: 0;
+  padding: 0;
+}
+.dl-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.dl-date {
+  font-weight: 600;
+  font-size: 13px;
+}
+.dayline.big .dl-date {
+  font-size: 16px;
+}
+.dl-span {
+  font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+}
+.dl-body {
+  position: relative;
+}
+.dl-body .line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 2px;
+  margin-bottom: -1px;
+  border-radius: 1px;
+  background: #2a3146;
+}
+.dayline.big .dl-body .line {
+  height: 3px;
+  background: #3a4360;
+}
+.workseg {
+  position: absolute;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--work);
+  opacity: 0.85;
+}
+.dayline:not(.big) .workseg {
+  height: 6px;
+  opacity: 0.55;
+}
+.dayline.big .workseg {
+  height: 10px;
+}
+.workseg span {
+  position: absolute;
+  top: 12px;
+  left: 4px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.pt {
+  position: absolute;
+  width: 0;
+  height: 0;
+}
+.pt.past {
+  opacity: 0.45;
+}
+.pt .stem {
+  position: absolute;
+  left: -0.5px;
+  bottom: 0;
+  width: 1px;
+  background: #2a3146;
+}
+.pt .lbl {
+  position: absolute;
+  left: -6px;
+  white-space: nowrap;
+  font-size: 12px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: #0b0d13;
+}
+.dayline:not(.big) .pt .lbl {
+  font-size: 11px;
+}
+.pt .lbl-t {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+/* markers: circle = automatic, diamond = placed by the day, ring = fixed by the day */
+.life .mk {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 11px;
+  height: 11px;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background: var(--muted);
+  box-shadow: 0 0 0 2px #0b0d13;
+}
+.life .mk.day {
+  border-radius: 2px;
+  transform: translate(-50%, -50%) rotate(45deg);
+  width: 10px;
+  height: 10px;
+}
+.life .mk.fixed {
+  box-shadow: 0 0 0 2px #0b0d13, 0 0 0 3.5px var(--ink);
+}
+.life .mk.k-appointment { background: var(--t1); }
+.life .mk.k-chore { background: var(--t2); }
+.life .mk.k-reminder,
+.life .mk.k-note { background: var(--muted); }
+.legend .mk { background: var(--ink); }
+.nowmk {
+  position: absolute;
+  top: 0;
+  width: 1px;
+  background: var(--ink);
+  opacity: 0.8;
+}
+.nowmk span {
+  position: absolute;
+  bottom: -2px;
+  left: 4px;
+  font-size: 11px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  transform: translateY(100%);
+}
+.dl-body .hr {
+  position: absolute;
+  bottom: 0;
+  transform: translateX(-50%);
+  font-size: 10px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.life-week {
+  margin-top: 18px;
+}
+.life-hidden {
+  margin-top: 14px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.life-hidden ul {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  color: var(--ink);
+}
+
+/* behind */
+.life-behind table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 12px;
+}
+.life-behind th,
+.life-behind td {
+  padding: 6px 8px;
+  border-top: 1px solid var(--grid);
+  text-align: center;
+  font-weight: 400;
+}
+.life-behind thead th {
+  color: var(--muted);
+  border-top: 0;
+  font-variant-numeric: tabular-nums;
+}
+.life-behind tbody th {
+  text-align: left;
+  white-space: nowrap;
+  width: var(--lane-label);
+}
+.life-behind td .n {
+  margin-left: 4px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.life-behind td.last { text-align: right; }
+
+.life-tip {
+  position: fixed;
+  z-index: 50;
+  pointer-events: none;
+  max-width: 280px;
+  padding: 6px 9px;
+  font-size: 12px;
+  background: #151a26;
+  border: 1px solid var(--edge);
+  border-radius: 6px;
+}
+
+@media (max-width: 760px) {
+  .life { --lane-label: 88px; --lane-side: 0px; padding: 14px 16px 24px; }
+  .life .lane-side { display: none; }
+}

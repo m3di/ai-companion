@@ -18,7 +18,7 @@ const DIGEST_SYSTEM = `You convert source material into compact MEMORY NOTES for
 
 Rules:
 - Output ONLY a JSON array, nothing else. Each element: {"key": string, "summary": string, "content": string}.
-- key: a short kebab-case slug, stable and specific (e.g. "tcp-pr-stack", "grinderlab-prod-bringup").
+- key: a short kebab-case slug, stable and specific (e.g. "tcp-pr-stack", "lumenlab-prod-bringup").
 - summary: <= 12 words, the index line.
 - content: a tight, self-contained unit of knowledge — facts, ids, current state. Reference related notes inline as [[their-key]] to capture connections. No fluff.
 - Merge related facts into ONE note; do not fragment. Aim for a focused set of strong notes, not many weak ones.

@@ -7,10 +7,15 @@
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "start": "tsx src/index.ts",
-    "typecheck": "tsc --noEmit"
+    "body": "cd body && ./companion build",
+    "typecheck": "tsc --noEmit",
+    "atlas:install": "npm --prefix web install",
+    "atlas:build": "npm --prefix web run build",
+    "atlas:dev": "npm --prefix web run dev",
+    "test": "DB_PATH=data/tmp/test.db tsx test/prepare.ts && DB_PATH=data/tmp/test.db TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-test} tsx --test test/*.test.ts"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.3.168",
+    "@anthropic-ai/claude-agent-sdk": "^0.3.316",
     "@grammyjs/auto-retry": "^2.0.2",
     "@grammyjs/runner": "^2.0.3",
     "better-sqlite3": "^12.10.0",

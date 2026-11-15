@@ -9,3 +9,10 @@ dist/
 # deployment keeps its own knowledge locally / on its PVC, never in git.
 knowledge-map.md
 kb/*.pl
+.DS_Store
+
+# The Atlas client is built, not committed.
+web/dist/
+
+# Local scratch (scrapes, logs) — never committed.
+tmp/

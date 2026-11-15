@@ -1,7 +1,10 @@
 # Companion system prompt
 
-This text is appended to Claude Code's own system prompt on every turn. Edit it
-freely — changes take effect on the next message, no restart needed.
+This text is part of every WORKER's system prompt (src/workerPrompt.ts), which
+is frozen per session so the prompt cache holds across turns. Edit it freely —
+an edit takes effect on the next session, and on a live worker's next turn at
+the price of one cache miss (the prompt is re-frozen under the same transcript).
+It must hold nothing that moves on its own: no dates, no counts, no state.
 
 ## Style over Telegram
 

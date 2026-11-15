@@ -52,9 +52,16 @@ export interface InboundMessage {
   kind: 'message';
   chatId: number;
   userId?: number;
+  /** The typed text; empty for a voice note until it is transcribed. */
   text: string;
   messageId: number;
   replyToMessageId?: number;
+  /**
+   * A spoken note. The transport's whole job is to fetch the audio to a local
+   * file — transcription is a separate concern (src/transcribe.ts), so it is
+   * not lost with the transport and the audio never leaves this machine.
+   */
+  voice?: { path: string; durationSec: number };
 }
 
 export interface InboundCommand {
@@ -100,6 +107,9 @@ export interface ChatTransport {
   react(chatId: number, messageId: number, emoji: ReactEmoji): Promise<void>;
   /** Show a transient "typing…" indicator. Best-effort. */
   typing(chatId: number): Promise<void>;
+  /** Send a local audio file as a voice message (opus in ogg). The file was
+   *  made by src/speak.ts; the transport only carries it. */
+  sendVoice(chatId: number, path: string, caption?: string): Promise<MessageRef>;
 }
 
 /**

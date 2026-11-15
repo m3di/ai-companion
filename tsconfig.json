@@ -10,7 +10,8 @@
     "resolveJsonModule": true,
     "noUncheckedIndexedAccess": true,
     "outDir": "dist",
-    "rootDir": "src"
+    "rootDir": "."
   },
-  "include": ["src"]
+  "include": ["src", "test"],
+  "exclude": ["node_modules", "dist", "data"]
 }

@@ -5,19 +5,23 @@ import {
   sessionKey,
   setActiveSlot,
 } from './db.js';
-import { chunkRaw, escapeHtml, toTelegramMarkdown } from './format.js';
+import { chunkRaw, toTelegramMarkdown } from './format.js';
 import { LiveStatus } from './liveStatus.js';
 import type { Buttons, ChatTransport } from './transport/types.js';
 
 /**
  * Many logical Claude sessions live inside one chat. The user always talks to
  * the concierge (slot -1); workers (slots 0+) run in the background and surface
- * through the concierge — except a worker turn the user triggered directly (by
- * replying to one of its messages, or one the concierge handed off to "watch"),
- * which streams to the chat. There is no "active/attached" thread: a turn's
- * visibility is fixed when it starts (the `visible` flag), not by what the user
- * is looking at. This module owns that per-turn output gating plus the worker
- * status badges.
+ * through the concierge — except a worker turn the concierge handed off to
+ * "watch", which renders into the chat. There is no "active/attached" thread:
+ * a turn's visibility is fixed when it starts (the `visible` flag), not by what
+ * the user is looking at.
+ *
+ * A VISIBLE WORKER TURN OWNS EXACTLY ONE MESSAGE, edited in place — see
+ * RunningView below. Only the concierge speaks in messages of its own, because
+ * only the concierge is talking to the user.
+ *
+ * This module owns that per-turn output gating plus the worker status badges.
  */
 
 export type Badge = 'idle' | 'running' | 'needsPerm' | 'asked' | 'error';
@@ -67,6 +71,18 @@ export function titleOf(chatId: number, slot: number): string {
   return getSession(chatId, slot)?.title ?? `Session ${slot + 1}`;
 }
 
+/**
+ * Mark a thread as having been cut off mid-turn.
+ *
+ * Badges live in memory and are rebuilt by whatever the next turn does, which
+ * is exactly why a restart used to erase the difference between a thread that
+ * finished and one that was killed mid-edit. Boot re-establishes that
+ * difference from the durable turns_running rows.
+ */
+export function markInterrupted(key: string): void {
+  setBadge(key, 'error');
+}
+
 /** A one-glyph status marker for a thread (running/needs-input), or '' if idle. */
 export function statusMarker(chatId: number, slot: number): string {
   const badge = badgeOf(sessionKey(chatId, slot));
@@ -112,6 +128,16 @@ export class RunningView {
     readonly chatId: number,
     readonly slot: number,
     readonly visible: boolean,
+    /**
+     * True when the concierge dispatched this turn and is waiting to report it,
+     * rather than the user having asked for it directly.
+     *
+     * This used to be the same bit as `visible`, which forced a false choice:
+     * a dispatched worker was either reported by the concierge OR shown to the
+     * user, never both. Now every worker turn gets a box and this only decides
+     * who is told when it ends and when it gets stuck.
+     */
+    readonly background = false,
   ) {}
 
   get key(): string {
@@ -127,8 +153,12 @@ export class RunningView {
     if (this.visible) await this.openLive();
   }
 
+  /** Typing belongs to the concierge alone: it is the chat-level "someone is
+   *  replying to you" hint, and the user is only ever talking to the concierge.
+   *  A worker running in the background must not make the chat look like it is
+   *  about to answer. */
   private startTyping(): void {
-    if (this.typing) return;
+    if (this.slot !== CONTROL_SLOT || this.typing) return;
     void this.transport.typing(this.chatId);
     this.typing = setInterval(() => {
       void this.transport.typing(this.chatId);
@@ -147,7 +177,7 @@ export class RunningView {
     if (this.status) return;
     this.startTyping();
     this.status = new LiveStatus(this.transport, this.chatId, this.label);
-    await this.status.start(stopKeyboard(this.slot));
+    await this.status.start(runningKeyboard(this.slot));
     this.status.push(this.lastAction, '🧠');
   }
 
@@ -164,21 +194,45 @@ export class RunningView {
     return this.slot === CONTROL_SLOT ? undefined : this.title;
   }
 
+  /**
+   * A WORKER OCCUPIES ONE MESSAGE.
+   *
+   * The concierge is the voice the user reads, so its answers are still real
+   * chat messages. A worker's output is progress on a task the concierge
+   * dispatched: it folds into the single live-status message this turn already
+   * owns, edited in place. A long worker run is now one line in the thread that
+   * keeps changing, instead of a wall of narration the user scrolls past to find
+   * the concierge again.
+   */
+  private get inlineOnly(): boolean {
+    return this.slot !== CONTROL_SLOT;
+  }
+
+  /** File-op notices carry an expandable diff, which cannot fold into the live
+   *  message — and `action()` has already logged the same op by name. So for a
+   *  worker this is dropped: the diff is in the repo, not the chat. */
   async fileOp(html: string): Promise<void> {
-    if (!this.visible) return;
-    const tag = this.label ? `🔧 <b>${escapeHtml(this.label)}</b> · ` : '';
-    await this.transport.send(this.chatId, { text: `${tag}${html}`, format: 'tgHtml' }).catch(() => {});
+    if (!this.visible || this.inlineOnly) return;
+    await this.transport.send(this.chatId, { text: html, format: 'tgHtml' }).catch(() => {});
   }
 
   async answer(text: string): Promise<void> {
-    if (this.visible) await sendAnswer(this.transport, this.chatId, text, this.key, this.label);
+    if (!this.visible) return;
+    if (this.inlineOnly) {
+      await this.openLive();
+      this.status?.say(text);
+      return;
+    }
+    await sendAnswer(this.transport, this.chatId, text, this.key, this.label);
   }
 
-  /** Mark the session blocked on a user interaction (permission / ask). */
+  /** Mark the session blocked on a user interaction (permission / ask). A
+   *  dispatched worker still shouts, because nobody is watching its box on
+   *  purpose — the user asked the concierge, not it. */
   async block(badge: 'needsPerm' | 'asked', notice: string): Promise<void> {
     this.blocked = true;
     setBadge(this.key, badge);
-    if (!this.visible) await notifyBackground(this.transport, this.chatId, notice);
+    if (this.background) await notifyBackground(this.transport, this.chatId, notice);
   }
 
   unblock(): void {
@@ -186,17 +240,50 @@ export class RunningView {
     setBadge(this.key, 'running');
   }
 
-  async finish(ok: boolean): Promise<void> {
+  /**
+   * Close the box. `headline` names an ending that was not an ordinary finish —
+   * a cancel, a timeout, an error — so it lands IN the box instead of as a
+   * loose message next to it.
+   */
+  /** After finish(): put the run's brief under the closed box in place of the cut tail. */
+  async showBrief(brief: string): Promise<void> {
+    if (this.visible && this.status) await this.status.showBrief(brief);
+  }
+
+  async finish(ok: boolean, headline?: string): Promise<void> {
     this.stopTyping();
-    setBadge(this.key, ok ? 'idle' : 'error');
-    // Visible: finalize the live status. Background: stay silent — the dispatcher
-    // wakes the concierge to decide how to report the completion.
-    if (this.visible && this.status) await this.status.finalize(ok);
+    // A turn that ended while blocked (it posted a question and returned) keeps
+    // its 'asked' badge — the thread is waiting on the user, not idle.
+    if (!this.blocked) setBadge(this.key, ok ? 'idle' : 'error');
+    if (this.visible && this.status) await this.status.finalize(ok, restKeyboard(this.slot), headline);
   }
 }
 
-function stopKeyboard(slot: number): Buttons {
+/** While a turn runs, the only useful action is to call it off. */
+function runningKeyboard(slot: number): Buttons {
   return [[{ text: '🛑 Stop', data: `stop:${slot}` }]];
+}
+
+/**
+ * Once a WORKER's turn ends its box becomes a small control panel, because the
+ * user can no longer reply into the thread — everything they might want to do
+ * with it has to be reachable from here or through the concierge.
+ *
+ * Both buttons are free in the sense that matters: they call functions that
+ * already exist. Continue is `enqueueTurn` with a nudge, the same path a
+ * dispatch takes. Recap reads the rolling one-liner the system already
+ * maintains after every worker turn, and fits a callback toast.
+ *
+ * The concierge gets no buttons: the user simply types at it.
+ */
+function restKeyboard(slot: number): Buttons {
+  // Empty, not undefined: the concierge's finished box must CLEAR its Stop
+  // button rather than keep a dead one (see toKeyboard in the telegram adapter).
+  if (slot === CONTROL_SLOT) return [];
+  return [[
+    { text: '▶️ Continue', data: `cont:${slot}` },
+    { text: '📋 Recap', data: `recap:${slot}` },
+  ]];
 }
 
 /** Send a one-line background notice (and clear any stale bottom keyboard). */

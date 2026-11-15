@@ -4,7 +4,15 @@
 > has checkboxes; check them off in the same PR that ships the work, and add a
 > dated line to the [Changelog](#changelog).
 
-_Last updated: 2026-06-17 (initial)._
+> **SUPERSEDED from round 10 (2026-07-31).** This file is the historical
+> phase plan (Phases 0–3) and its Changelog is the project's long-form
+> history — both still worth reading. The LIVE plan is
+> [CHARTER.md](CHARTER.md): the destination (*the Colleague*), the invariants,
+> the open shape forks, and milestones M0–M8. Phases 0 and 1 are done; Phase 2
+> (multi-user, Slack, deployment) survives as Charter **M7**, and Phase 3
+> (credential store, integrations) is unscheduled. Do not plan from this file.
+
+_Last updated: 2026-08-02 (superseded-notice; content frozen at 2026-07-04)._
 
 ---
 
@@ -96,6 +104,32 @@ The crown jewel — the part nobody else has. Prove it on ourselves before expos
 
 ## Changelog
 
+- **2026-07-04** — **The brain redesign, round two** (rationale in
+  [BRAIN.md](BRAIN.md)): **awareness bulletin** (an `events` blackboard —
+  worker recaps, dispatches, nightly passes — injected as a ≤~15-line bulletin
+  into every worker turn and the concierge prompt), **waiting-on ledger +
+  pulses** (a `waiting` table with free-text how-to-check; workers report
+  blocks via a `reportBlocked` side-channel; due entries batch into `[PULSE]`
+  concierge turns that check/notify/defer; grow caretakes the ledger nightly),
+  and the **ideas ledger** (`ideas/` in the knowledge tree, lifecycle in the
+  summary prefix, `noteIdea` tool for workers+concierge, matured nightly by
+  grow, ≤1-2 'suggested' surfaceable in the morning brief). Also same-day:
+  first live structural grow (30 flat notes → 5-folder tree), the
+  Task-subagent sandbox hole closed (grow gained `moveNote`/`deleteNote`
+  instead), and timed reminders (`"at"` on reminder findings → one-off
+  wakeups, preference-governed via shared memory).
+- **2026-07-04** — **The brain redesign, round one** (design + rationale in
+  [BRAIN.md](BRAIN.md)). The flywheel now closes unattended: nightly
+  **dream (reflect)** emits typed findings → **grow (act)** applies them the
+  same night (knowledge tree + thread memos + shared memory; `src`/prompt
+  changes stay operator-gated via `/proposals`). The knowledge base became a
+  **tree** (path keys, `_map.md` folder maps, link-health report) that grow
+  reorganizes on its own — no prescribed taxonomy. Added **wakeups**: the bot
+  schedules prompts for its own future self (`wakeups` table + poller +
+  concierge tools); the **morning brief** is a default daily wakeup delivering
+  reminder findings. New commands `/wakeups`, `/proposals`; new env
+  `MORNING_HOUR`. Phase-1 "dogfood grow" is superseded by the autonomous
+  pipeline + BRAIN.md round two (awareness bulletin, waiting ledger, ideas).
 - **2026-06-23** — **Time-windowed, non-overlapping dreams + retry.** Each dream now reflects on a specific window `(end of the last dream, now)` instead of a fixed last-180-messages slice — so nightly dreams each cover ~a day and never re-scan the same activity (the cause of the redundant back-to-back dreams). New `dreams.covers_from/covers_to` columns; `chatTimelineBetween` scopes the digest; an empty window is skipped (no wasted LLM call); the window only advances when a dream is saved, so a failed/missed night is picked up next time. `/dreams` shows each dream's window. Also: the nightly dream retries up to 3× with backoff on a transient failure (a socket-close flake had cost a whole night).
 - **2026-06-21** — **`/stats` rollup + flywheel usage capture.** Extended usage capture to the offline passes — `dream`/`grow`/`digest` now record their result-message usage to the unified `usage` table under namespaced keys (`<chat>:dream`/`:grow`/`:digest`); `extractUsage` is exported and reused. Added `db.statsRollup(chatId)` (totals incl. today, per-area breakdown — Workers collapsed vs. Concierge/Dream/Grow/Digest separated, top sessions by cost, model list) and a `/stats` command that renders it. Now every Claude call in the system — interactive and offline — is cost-accounted in one place. (`digestFile` regained a `chatId` arg for attribution.)
 - **2026-06-21** — **Per-turn usage/cost capture.** The SDK result message carries `modelUsage` (per-model tokens, cost, context window) + `total_cost_usd` + `duration_ms` — previously discarded (only `subtype` was read). Now `claude.ts` distills it into a `TurnUsage` on the result event, and `dispatch.ts` persists one row per turn to a new `usage` table (model, input/output/cache tokens, cost, latency, num_turns, context_window). Adds `saveUsage`, `latestContextTokens` (latest input_tokens ≈ a session's current context size), and `usageSummary` (per-session or chat-wide rollup incl. model list). This is the data layer for real per-session model/token/$ stats and a future `/stats` command.

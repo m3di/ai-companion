@@ -17,7 +17,14 @@ export const SAFE_TOOLS = new Set([
   'mcp__telegram__send',
   'mcp__telegram__ask',
   'mcp__telegram__askUserQuestion',
-  'mcp__telegram__setMemo',
+  // Worker side-channels into the bot's own ledgers — never touch user files.
+  'mcp__bot__reportBlocked',
+  'mcp__bot__noteIdea',
+  // Queues an observation for the night; writes nothing the day can see.
+  'mcp__bot__observe',
+  // Trace retrieval — read-only over the bot's own logs/transcript index.
+  'mcp__bot__searchMessages',
+  'mcp__bot__locateThreadTrace',
 ]);
 
 export function escapeHtml(s: string): string {
