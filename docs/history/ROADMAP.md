@@ -7,7 +7,7 @@
 > **SUPERSEDED from round 10 (2026-07-31).** This file is the historical
 > phase plan (Phases 0–3) and its Changelog is the project's long-form
 > history — both still worth reading. The LIVE plan is
-> [CHARTER.md](CHARTER.md): the destination (*the Colleague*), the invariants,
+> [CHARTER.md](../CHARTER.md): the destination (*the Colleague*), the invariants,
 > the open shape forks, and milestones M0–M8. Phases 0 and 1 are done; Phase 2
 > (multi-user, Slack, deployment) survives as Charter **M7**, and Phase 3
 > (credential store, integrations) is unscheduled. Do not plan from this file.

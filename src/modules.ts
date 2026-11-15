@@ -17,7 +17,7 @@ import { countStoryFollows } from './storyTree.js';
 // the offered set in storyTree.ts (one implementation, two seams).
 
 /**
- * KNOWLEDGE AS AN API (round 9, docs/plans/round-9-modules.md).
+ * KNOWLEDGE AS AN API (round 9, docs/history/plans/round-9-modules.md).
  *
  * Round 8 solved STORAGE and left RETRIEVAL untouched: `loadGraph()` reads every
  * row of every domain to answer anything, and the whole tree index is injected
@@ -538,7 +538,7 @@ export async function callModule(
    * The default exists to protect an agent's context window — a function that
    * hands back the whole graph has cost the very tax this layer removes. But the
    * cap belongs to the caller, not to the module: the Atlas
-   * (`docs/plans/atlas-visualization.md`) reads through this same API and is a
+   * (`docs/history/plans/atlas-visualization.md`) reads through this same API and is a
    * RENDERER, not an agent, so a megabyte of nodes is exactly what it asked for.
    * Agent-facing callers never pass this and keep the small cap.
    */

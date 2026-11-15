@@ -159,12 +159,12 @@ any process — a write, its run, and the whole attempt on close. `/api/mode`,
 
 ## The other docs
 
-- [docs/BRAIN.md](docs/BRAIN.md) — the running design log: why we changed our
+- [docs/history/BRAIN.md](docs/history/BRAIN.md) — the running design log: why we changed our
   minds, round by round.
 - [docs/plans/round-*.md](docs/plans/) — per-round working plans. Round 12
   (`round-12-the-body.md`, the Swift body as a second transport, M7) is the
   live one; round 11 (the story tree) is landed; round 10's step 3 was M2.
-- [docs/ROADMAP.md](docs/ROADMAP.md) — the original phase plan. Historical;
+- [docs/history/ROADMAP.md](docs/history/ROADMAP.md) — the original phase plan. Historical;
   superseded from round 10 by the Charter.
 
 ## Layout

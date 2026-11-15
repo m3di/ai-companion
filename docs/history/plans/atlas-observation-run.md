@@ -125,7 +125,7 @@ and in the Atlas: which domains lit up, which nodes never lit at all.
 
 ## Then: re-evaluate the target shape
 
-After the run, revisit `docs/plans/round-10-one-memory.md` § "The target shape"
+After the run, revisit `docs/history/plans/round-10-one-memory.md` § "The target shape"
 with the evidence in hand. The three things most likely to change:
 
 - **`observed` vs `state`** — if the dreams show the night repeatedly learning

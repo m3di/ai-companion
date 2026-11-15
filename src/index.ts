@@ -183,7 +183,7 @@ function firePulses(): void {
   }
 }
 
-// THE ATLAS (docs/plans/atlas-visualization.md): the entity graph drawn, and the
+// THE ATLAS (docs/history/plans/atlas-visualization.md): the entity graph drawn, and the
 // system's own activity animated on top of it. Read-only, loopback, and entirely
 // optional — with no ATLAS_PORT set, nothing here runs and the bot is unchanged.
 const atlas = startAtlas();

@@ -21,7 +21,7 @@ import { checkCommandAllowed, classifyCheck, runCommand } from './focus.js';
  *   developer  decides (accept / reject, with the Charter's idea test),
  *              lands, and lets the audit verify
  *
- * The decision WRITES the Charter's "Ideas measured" table — the table is a
+ * The decision WRITES the "Ideas measured" table in docs/DECISIONS.md — the table is a
  * render of the rows, not something a session remembers to type (I1, I9).
  * Verification is the same mechanism findings use: a read-only command the
  * nightly audit re-runs, with three outcomes (I3), so a landed proposal says
@@ -39,15 +39,15 @@ export interface IdeaTest {
   measure: string;
 }
 
-const CHARTER = resolve(process.cwd(), 'docs/CHARTER.md');
+const DECISIONS = resolve(process.cwd(), 'docs/DECISIONS.md');
 
 function fence(s: string): string {
   return s.replace(/\s+/g, ' ').replace(/\|/g, '\\|').trim();
 }
 
-/** Append one row to the Charter's "Ideas measured" table. Returns false when
+/** Append one row to the "Ideas measured" table (docs/DECISIONS.md). Returns false when
  *  the table cannot be found — the decision is still recorded in the row. */
-export function writeIdeaMeasured(date: string, idea: string, verdict: string, charterPath = CHARTER): boolean {
+export function writeIdeaMeasured(date: string, idea: string, verdict: string, charterPath = DECISIONS): boolean {
   let text: string;
   try {
     text = readFileSync(charterPath, 'utf8');

@@ -1,7 +1,7 @@
 # Round 5 — The Unification (implementation plan)
 
 > Instruction document for a fresh context. Self-contained: current state →
-> desired state, in four shippable steps. `docs/BRAIN.md` (§3.10, §3.11) is
+> desired state, in four shippable steps. `docs/history/BRAIN.md` (§3.10, §3.11) is
 > the raw idea board / rationale; THIS file is the plan. Where they disagree,
 > this file wins. Written 2026-07-07 after rounds 1–4 shipped.
 
@@ -24,7 +24,7 @@
   a RESTORE.md with exact retry commands. The reconstruction defrag also
   leaves the old tree at `data/knowledge/.archive/` and auto-restores on
   failure.
-- **Commit per step on main.** Update `docs/BRAIN.md` (decision log +
+- **Commit per step on main.** Update `docs/history/BRAIN.md` (decision log +
   changelog) as decisions land; keep the auto-memory roadmap note current.
 - **Sandbox rule (non-negotiable)**: night/defrag agents get NO
   Bash/Task/Agent/web tools — the toolset is the boundary. `src/` + prompts

@@ -5,7 +5,7 @@ import { botSessionIds, searchChatMessages, searchEpisodeText } from './db.js';
 import { config } from './config.js';
 
 /**
- * DISCOVERY (round 6 step 4, BRAIN.md §3.12) — finding work that already
+ * DISCOVERY (round 6 step 4, docs/history/BRAIN.md §3.12) — finding work that already
  * happened.
  *
  * Mehdi's original ask, before any of this was built: "if I'm doing a bugfix

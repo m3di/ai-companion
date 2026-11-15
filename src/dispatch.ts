@@ -1429,7 +1429,7 @@ function topicList(topics: string[], max = 4): string {
 
 /**
  * Harvest local Claude Code sessions and show what the system now sees of the
- * work that never came through Telegram (round 6 step 1, BRAIN.md 3.12).
+ * work that never came through Telegram (round 6 step 1, docs/history/BRAIN.md 3.12).
  *
  * The list shows each episode's ARC, not just its title: Claude Code titles a
  * session once at the start and never revisits it, so a burst that opened with

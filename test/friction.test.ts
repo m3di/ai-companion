@@ -55,7 +55,7 @@ describe('bypass detection', () => {
   });
 
   it('is not fooled by a name that merely mentions knowledge', () => {
-    assert.equal(bypassOf('Read', { file_path: resolve('docs/plans/round-9-modules.md') }), undefined);
+    assert.equal(bypassOf('Read', { file_path: resolve('docs/history/plans/round-9-modules.md') }), undefined);
     assert.equal(bypassOf('Bash', { command: 'echo knowledge' }), undefined);
   });
 });

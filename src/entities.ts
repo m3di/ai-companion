@@ -12,7 +12,7 @@ export function factSha(fact: string): string {
 }
 
 /**
- * ENTITY RECORDS (round 8, docs/plans/round-8-knowledge.md) — knowledge as a
+ * ENTITY RECORDS (round 8, docs/history/plans/round-8-knowledge.md) — knowledge as a
  * timeless index of entities, each carrying its own clock.
  *
  * Round 7's addendum tried to keep knowledge honest with a WRITING RULE ("would

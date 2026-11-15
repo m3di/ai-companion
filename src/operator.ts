@@ -1444,7 +1444,7 @@ async function rewritePass(
           // heaviest reader of the knowledge tree — this pass, every night —
           // produced no bypass rows at all. The round-9 ledger then reported
           // health because nothing was recorded, not because nothing was wrong
-          // (docs/plans/round-10-one-memory.md §5). The same call also pulses,
+          // (docs/history/plans/round-10-one-memory.md §5). The same call also pulses,
           // which turns a dream from a several-minute silence between two
           // events into something watchable while it thinks.
           if (b.type === 'tool_use' && b.name) noteToolCall(NIGHT_SESSION, String(b.name), (b.input ?? {}) as Record<string, unknown>);

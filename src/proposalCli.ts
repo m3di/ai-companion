@@ -27,7 +27,7 @@ import { decideProposal, landProposal, proposalLine, renderProposal, verifyLande
  *   npx tsx src/proposalCli.ts merge <from> <into> "<note>"
  *   npx tsx src/proposalCli.ts verify               # run every landed row's check now
  *
- * accept / reject append the row to the Charter's "Ideas measured" table and
+ * accept / reject append the row to the "Ideas measured" table (docs/DECISIONS.md) and
  * post an event the concierge sees, so the next conversation about the same
  * thing adds evidence instead of re-proposing.
  */
@@ -135,7 +135,7 @@ switch (cmd) {
       console.error(`#${id} is not an open proposal`);
       process.exit(1);
     }
-    console.log(`#${id} ${cmd}ed${r.charter ? '; row appended to docs/CHARTER.md "Ideas measured"' : '; CHARTER table not found — add the row by hand'}`);
+    console.log(`#${id} ${cmd}ed${r.charter ? '; row appended to docs/DECISIONS.md "Ideas measured"' : '; DECISIONS table not found — add the row by hand'}`);
     break;
   }
   case 'land': {

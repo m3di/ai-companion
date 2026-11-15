@@ -324,7 +324,7 @@ Effect within minutes of landing: all 56 probes ran, **5 changes / 4 status
 flips** recovered, closed entities 26 → 31.
 
 **Also shipped ahead of schedule:** the Atlas
-(`docs/plans/atlas-visualization.md`) — the live graph view, reading exclusively
+(`docs/history/plans/atlas-visualization.md`) — the live graph view, reading exclusively
 through `callModule`. It was meant to be step 6 of this round. It became step 0
 by accident, and immediately earned itself by surfacing finding 8.
 

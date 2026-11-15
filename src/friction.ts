@@ -13,7 +13,7 @@ import { pulse } from './pulse.js';
 import { storyIdFor } from './storyTree.js';
 
 /**
- * FRICTION DETECTION (round 9, docs/plans/round-9-modules.md §4).
+ * FRICTION DETECTION (round 9, docs/history/plans/round-9-modules.md §4).
  *
  * "No interaction == no improvement. No friction == the code is good, the logic
  * is solid." (Mehdi, 2026-07-28)

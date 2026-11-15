@@ -6,7 +6,7 @@ import { knowledgePath } from './knowledge.js';
 import { config } from './config.js';
 
 /**
- * THE HARVEST LAYER (round 6 step 1, BRAIN.md §3.12).
+ * THE HARVEST LAYER (round 6 step 1, docs/history/BRAIN.md §3.12).
  *
  * The system only ever knew the work that came through Telegram. Most of
  * Mehdi's real work happens in local Claude Code sessions — 67 in a week

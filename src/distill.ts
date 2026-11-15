@@ -5,7 +5,7 @@ import { episodeForDistill, episodesToDistill, markEpisodeDistilled, postEvent, 
 import { stripLoneSurrogates } from './format.js';
 
 /**
- * DISTILLATION (round 6 step 2, BRAIN.md §3.12) — skeletons in, recaps out.
+ * DISTILLATION (round 6 step 2, docs/history/BRAIN.md §3.12) — skeletons in, recaps out.
  *
  * The expensive version of this would hand an agent a transcript. It never
  * does: step 1 already reduced a 620KB session to a ~5k-char skeleton (title,

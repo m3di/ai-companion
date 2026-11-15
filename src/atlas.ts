@@ -32,7 +32,7 @@ import { callModule } from './modules.js';
 import { onPulse, type Pulse, recentPulses } from './pulse.js';
 
 /**
- * THE ATLAS SERVER — the graph, seen and alive (docs/plans/atlas-visualization.md).
+ * THE ATLAS SERVER — the graph, seen and alive (docs/history/plans/atlas-visualization.md).
  *
  * One rule governs this whole file, and it is the reason the Atlas is worth
  * building beyond the picture: **it reads the knowledge through

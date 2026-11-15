@@ -1384,7 +1384,7 @@ export function buildConciergeServer(view: RunningView) {
   );
 
   /**
-   * DESIGN PROPOSALS — the channel to the developer (docs/CHARTER.md, Ideas
+   * DESIGN PROPOSALS — the channel to the developer (docs/DECISIONS.md, Ideas
    * measured). A conversation that concludes the SYSTEM should change — "the
    * morning routine no longer works for me", "make a ledger so checks log
    * instead of waking you" — becomes a row with evidence, not a worker and a

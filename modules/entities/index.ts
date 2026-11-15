@@ -446,7 +446,7 @@ export function trace(ref: string): string[] {
  * This function BREAKS THE MODULE'S OWN RULE (return an answer, not the data),
  * and it may do so for exactly one reason: its caller is a RENDERER, and a
  * renderer's genuine question is "the whole shape". It exists because the Atlas
- * demanded it (`docs/plans/atlas-visualization.md`), not because the graph
+ * demanded it (`docs/history/plans/atlas-visualization.md`), not because the graph
  * should be readable in bulk. An agent that calls this instead of `domains()`,
  * `search()` or `openLoops()` has paid the entire memory as context to answer a
  * question one line would have answered — which is the tax round 9 exists to
