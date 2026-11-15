@@ -1,6 +1,6 @@
 # body — Companion.app
 
-The native Mac window of the companion (round 12, `docs/plans/round-12-the-body.md`):
+The native Mac window of the companion (round 12, [`docs/plans/round-12-the-body.md`](../docs/plans/round-12-the-body.md)):
 the STAGE in the middle, WIDGETS snapped around it, every widget a live render
 of the bot's Atlas (`ATLAS_PORT`, default 7391). The app owns one piece of state,
 the layout file; everything it shows belongs to the bot and is re-read when the

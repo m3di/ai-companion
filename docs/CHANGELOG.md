@@ -5,6 +5,24 @@ against, and what it left open. The Charter fixes the destination; this is the
 walk toward it. Entries before 2026-08-01 live in
 [history/BRAIN.md](history/BRAIN.md).
 
+- **2026-11-16** — **The repo goes public clean, and the docs are recalibrated.**
+  Before the push, a scan of 201 unpushed commits found live data written into
+  changelog lines, comments, tests and prompt examples — the price of writing
+  every rule from its real incident. Replaced with fictional stand-ins
+  throughout, the generated demo week deleted outright, and the local history
+  squashed into one public commit. The test that caught the rename was itself
+  reading a live row (`unfiled.test.ts`), which is the I13 snapshot doing its
+  job and also why a fresh clone cannot pass the whole suite; the README now
+  says so. Then the docs: the Charter keeps only what does not move (2,084 →
+  ~410 lines) and gains a *Where it stands* table read from `auditCli`,
+  `cycleCli` and `vitalsCli`; *Ideas measured* moves to `DECISIONS.md`
+  (`proposalCli` follows), this log to `CHANGELOG.md`, BRAIN/ROADMAP and landed
+  rounds 5–11 to `history/`. The invariants are numbered I1–I13 in order — the
+  observer rule had shared I11 with the night rule. The README is rewritten
+  from the code as an open research system. The recalibration's finding is in
+  the Charter: M4's number has not moved since August, and the latest rounds
+  advanced M7 instead — a choice to make on purpose next.
+
 - **2026-11-13** — **Proposal #7: the timeline is the day session's board.**
   Mehdi's feedback on the first view: today is a line, items sit on it saying
   what is next, and the DAY SESSION decides what goes there — from work and

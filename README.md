@@ -1,239 +1,187 @@
-# 🤖 ai-companion
+# ai-companion
 
-> A team chatbot that **runs real work** and **learns from it.** Talk to a concierge in chat; it spawns Claude Code worker sessions to do the work, and a nightly **dream → grow** loop turns everything that happened into a curated, git-tracked knowledge base. Start empty, and let it grow into the brain of your team's workflow.
+> A Claude Code companion with a memory that maintains itself. You talk to one
+> concierge; background workers do the work; an entity **graph** holds what was
+> learned; a **night** folds each day into it and audits its own machinery; the
+> **Atlas** lets the operator see everything it knows and everything it did.
 
 ![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178c6?logo=typescript&logoColor=white)
 ![Node](https://img.shields.io/badge/Node-%E2%89%A520-339933?logo=node.js&logoColor=white)
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
-![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)
 
-`ai-companion` runs on your own machine (or a container), long-polls a chat
-surface, and drives [Claude Code](https://platform.claude.com/docs/en/agent-sdk/typescript)
-through the Claude Agent SDK. It uses your existing Claude Code login — no API
-key required — and keeps state in a small SQLite file plus a git-tracked
-knowledge directory. No server, no separate database, no RAG — Claude Code reads
-your files directly.
-
-It's a **general framework**: clone it, point it at your repos, and grow your own
-companion. This repo ships the engine; your bot's knowledge lives only on your
-machine.
+**What this is.** One person's working system, published as a design: it has
+run daily since June 2026 and every rule in it was bought with a real failure,
+written down with the date and the number that exposed it. It runs, and you can
+run it — but it is a research system with one operator, not a turnkey product.
+The parts most worth reading are the [invariants](docs/CHARTER.md#the-invariants)
+and the [decisions](docs/DECISIONS.md), not the setup.
 
 ---
 
-## 🧠 The idea
+## The shape
 
 ```
-                        you ─────────────▶  🎛️ Concierge  ─── spawns ──▶  🔧 workers
-                     (just talk)            (one front door)              (Claude Code sessions)
-                                                  │                            │
-                                                  ▼                            ▼
-                            SQLite (the firehose: sessions, messages)   work on your repos
-                                                  │
-                        nightly ──▶  💤 dream (reflect) ──▶ typed findings
-                                                  │
-                                     🌱 grow (act, same night)
-                                                  │
-                                                  ▼
-                                   knowledge/ (curated brain, a tree)
-                                                  │
-                                                  ├──▶ read by every future turn
-                                                  └──▶ ⏰ morning brief (reminders)
+            Telegram ─┐                         ┌─ Companion.app (macOS, voice, presence)
+                      ▼                         ▼
+                 ┌──────────────── the day ────────────────┐
+                 │  concierge — the only door              │
+                 │     ├─ workers (Claude Code sessions)   │
+                 │     ├─ commitments, focus set, probes   │
+                 │     └─ observe() → the inbox            │
+                 └────────────────────┬────────────────────┘
+                                      │ refs on every read and write
+                                      ▼
+                 ┌──────────── the graph (the store) ──────┐
+                 │  entities per domain (.jsonl)           │
+                 │  record() is the only write path        │
+                 │  state = probe-owned · observed = night │
+                 └────────────────────┬────────────────────┘
+                                      ▲
+                 ┌──────────────── the night ──────────────┐
+                 │  audit the machine → fold the inbox →   │
+                 │  garden → rewrite the story tree        │
+                 └─────────────────────────────────────────┘
+                                      │
+                                      ▼
+                     the Atlas — live graph, runs, mode, vitals
 ```
 
-- **One front door.** You always talk to the **concierge**. It answers, manages
-  threads, and hands real work to **worker** sessions. Worker messages are tagged
-  `🔧 <title>` — reply to one to talk to that worker directly.
-- **Workers** are parallel, resumable Claude Code sessions. They run in the
-  background and report through the concierge; one you're watching streams live.
-- **The flywheel.** SQLite is the short-term firehose (what happened).
-  `knowledge/` is the long-term brain (what we learned), organized as a tree
-  the system grows itself. Each night **dream** reflects on the day and emits
-  typed findings; **grow** applies them the same night — fixing memos and
-  shared memory, writing and reorganizing notes. Reminders reach you in a
-  **morning brief**; proposed code changes queue for the operator, never
-  auto-applied. Every interaction makes the next answer better.
-- **Wakeups.** The bot schedules prompts for its own future self (`/wakeups`):
-  reminders, re-checks of pending items, recurring routines like the morning
-  brief — and can reconfigure them by talking to you.
+- **One door.** Every message reaches the concierge. Workers run in the
+  background and report through it; replying to a worker's message is a
+  one-off direct line, never a mode you get stuck in.
+- **The graph is the store.** Knowledge is typed entities in per-domain files,
+  written only through `record()`, linted on every parse. Every fact has one
+  home; maps, briefs and the root are *renders* of it.
+- **The night is the metabolism.** It opens by auditing the machine itself
+  (suite, typecheck, probes, friction, cost), then folds the day's inbox into
+  the graph, gardens it, and rewrites the story the next day boots from. A day
+  cannot begin until its night has ended — and the night can always be
+  cancelled, which rolls back what it wrote.
+- **Measured, not assumed.** Reads and writes carry refs, so "did the day
+  actually use its memory?" is a query (`cycleCli`), not a hope. The
+  [Charter](docs/CHARTER.md#where-it-stands--2026-11-16) states where each
+  milestone honestly stands, including the ones that are not working yet.
+- **Operator mode.** The bot is `live`, `dreaming`, or `debug`. Debug sedates
+  the day and snapshots the knowledge tree so you can operate on memory and
+  then keep or roll back the result, byte for byte.
+- **Two transports, plus voice.** Telegram when you are away; a native Mac app
+  (the *body*) when you are at the desk, which knows you are there. Voice in is
+  transcribed locally (whisper.cpp); voice out is spoken locally (Piper).
 
----
+## Reading the machine
 
-## 🚀 Quick start
-
-**Prerequisites:** Node ≥ 20 and a Claude Code login (`claude` → `/login`).
+The system reports on itself through CLIs, each of which prints every input
+whether or not it fired:
 
 ```bash
-git clone https://github.com/m3di/ai-companion.git
-cd ai-companion
+npx tsx src/vitalsCli.ts     # free, instant: what state is it in
+npx tsx src/auditCli.ts      # is anything broken (runs the suite — give it a minute)
+npx tsx src/cycleCli.ts      # per day+night: who read memory, what changed, what it cost
+npx tsx src/inboxCli.ts      # what the day captured that the night has not folded
+npx tsx src/proposalCli.ts   # design proposals the bot opened for its developer
+npx tsx src/modeCli.ts debug "why"   # sedate the day to work on it; `exit` / `exit --rollback`
+```
+
+## Running it
+
+**Needs:** Node ≥ 20, a Claude Code login (`claude` → `/login`; no API key),
+a Telegram bot token. Optional: `ffmpeg` + `whisper-cpp` for voice in, Piper
+for voice out, Swift 6.2 on macOS for the body.
+
+```bash
+git clone https://github.com/m3di/ai-companion.git && cd ai-companion
 npm install
-cp .env.example .env        # then fill it in (see below)
+cp .env.example .env            # token, allowed chat id, working dir — see below
+npm run atlas:install && npm run atlas:build   # the Atlas client, once
+npm run dev                     # watch mode; `npm start` to run once
 ```
 
-1. **Create a bot** — message [@BotFather](https://t.me/BotFather) → `/newbot` →
-   copy the token into `TELEGRAM_BOT_TOKEN`.
-2. **Pick a working directory** — set `CLAUDE_WORKING_DIR` to where Claude should
-   operate; `WORKSPACE_DIR` is the folder holding the repos it may touch.
-3. **Find your chat ID** — run `npm run dev`, message the bot; it replies with
-   your chat ID. Put it in `ALLOWED_CHAT_IDS` and restart.
-4. **Say hi** — just tell the concierge what you need.
+Message the bot once; it replies with your chat id. Put it in
+`ALLOWED_CHAT_IDS` and restart. Then just talk to it. The Atlas is at
+`http://127.0.0.1:$ATLAS_PORT`. `npm run body` builds the Mac app, which
+`npm start` then launches alongside the bot ([body/README.md](body/README.md)).
+
+The graph starts empty. Domains, entities and the story grow from what you do
+with it; nothing about a particular person ships in this repo.
+
+### Chat commands
+
+| | |
+|---|---|
+| *(any message)* | the concierge |
+| `/status` · `/sessions` | overview · worker threads |
+| `/focus` · `/commitments` | what deserves attention now · reminders, routines, watched items |
+| `/find <phrase>` · `/episodes` | search past work · work harvested from your local Claude Code sessions |
+| `/capture` · `/process` | queue notes silently all day · triage them |
+| `/cancel` | stop all running work |
+| `/dream` · `/cancelnight <why>` | run the night now · stop it and roll it back |
+| `/debug` · `/live [rollback]` | sedate the day · resume, keeping or discarding changes |
+| `/voice` | pick and calibrate the speaking voice |
+| `/proposals` · `/repos` | proposed changes · workspace repos |
+
+### Configuration
+
+Everything is environment variables; [`.env.example`](.env.example) documents
+each one. The ones you must set:
+
+| variable | |
+|---|---|
+| `TELEGRAM_BOT_TOKEN` | from @BotFather |
+| `ALLOWED_CHAT_IDS` | who may use the bot; empty means nobody |
+| `CLAUDE_WORKING_DIR` | where Claude Code operates; `WORKSPACE_DIR` holds the repos it may touch |
+
+Also commonly set: `CLAUDE_MODEL` / `CONCIERGE_EFFORT` (the concierge and the
+night), `WORKER_MODEL` / `WORKER_EFFORT` (workers it doesn't size itself),
+`NIGHTLY_HOUR`, `MORNING_HOUR`, `ATLAS_PORT`, `PERMISSION_MODE`.
+
+### Tests
 
 ```bash
-npm run dev        # watch mode (auto-reload)
-npm start          # run once
-npm run typecheck  # tsc --noEmit
+npm run typecheck
+npm test
 ```
 
----
+`npm test` snapshots the instance's own database (`data/companion.db`) into
+`data/tmp/` and runs against the copy — several tests check real state, by
+design (see [I13](docs/CHARTER.md#the-invariants) for why the snapshot step is
+guarded). On a fresh clone with no database it runs against an empty one, and
+those tests fail; the rest are self-contained.
 
-## 💬 Talking to it
+## Layout
 
-There is exactly **one** interaction model, so nothing is ambiguous:
+| path | |
+|---|---|
+| `src/concierge.ts`, `dispatch.ts` | the day: the only door, turns, the worker fleet |
+| `src/entities.ts`, `entityWrite.ts` | the graph's grammar, parser, lint and write path |
+| `modules/entities`, `modules/graph` | the callable knowledge API (`find`, `record`, `history`, …) and graph measurements |
+| `src/operator.ts`, `night.ts`, `gardener.ts`, `storyTree.ts` | the night: audit, fold, garden, the story |
+| `src/prober.ts`, `focus.ts`, `commitments.ts` | the state clock, the attention set, dated plans |
+| `src/mode.ts`, `runs.ts`, `debugAgent.ts` | operator mode and the runs it records |
+| `src/*Cli.ts` | the machine's self-reports |
+| `src/atlas.ts`, `web/` | the Atlas server and its React client |
+| `src/transport/`, `body/` | Telegram, and the Swift Mac app |
+| `src/transcribe.ts`, `speak.ts` | local voice in and out |
+| `data/` | the instance: SQLite, knowledge tree, voice — git-ignored |
 
-- **Plain message → the concierge.** It decides what to do: answer, manage
-  threads, or delegate work to a worker.
-- **Reply to a `🔧` worker message → that worker.** A one-off direct line; your
-  next plain message is back with the concierge. You never "switch into" a thread.
-- **Background work** runs quietly and the concierge reports it when done; work
-  you ask to watch streams into the chat, tagged with its worker's title.
+## Docs
 
-### Commands
+| | |
+|---|---|
+| [docs/CHARTER.md](docs/CHARTER.md) | the destination, the 13 invariants, the milestones and where each stands — **start here** |
+| [docs/DECISIONS.md](docs/DECISIONS.md) | every idea measured, accepted or rejected, with its reason |
+| [docs/CHANGELOG.md](docs/CHANGELOG.md) | one dated entry per step |
+| [docs/plans/](docs/plans/) | the live round's working plan |
+| [docs/history/](docs/history/) | the original design log and the plans of landed rounds |
+| [CLAUDE.md](CLAUDE.md) | how an agent session works on this repo |
 
-| Command       | What it does                                                   |
-| ------------- | -------------------------------------------------------------- |
-| `/sessions`   | Status board of your worker threads.                           |
-| `/capture`    | Toggle capture mode — queue notes/forwards silently all day.   |
-| `/process`    | Triage everything captured and fan it out to threads.          |
-| `/cancel`     | Stop all running work in this chat.                            |
-| `/repos`      | List, add, or scan your workspace repos.                       |
-| `/dream`      | Run the reflect stage over recent activity now.                |
-| `/dreams`     | List saved reflections (`/dreams <id>` for the full report).   |
-| `/grow`       | Run the act stage: apply pending findings to memory/knowledge. |
-| `/wakeups`    | The bot's scheduled wakeups & reminders.                       |
-| `/proposals`  | Code/prompt changes the bot proposed (operator-gated).         |
-|               | …and the design proposals open with the developer (`src/proposalCli.ts`). |
-| `/status`     | Concierge + worker overview.                                   |
+## Security
 
----
+A bot token is effectively public, and this bot runs tools on your machine.
+Only chats in `ALLOWED_CHAT_IDS` are served. Start workers on `default` or
+`acceptEdits` and move to `auto` only for workspaces you trust. The Atlas binds
+to `127.0.0.1` and has no auth — do not expose it. `.env` and `data/` are
+git-ignored; never commit either.
 
-## 🌱 The knowledge flywheel
-
-- **Knowledge base** — `KNOWLEDGE_DIR` (default `data/knowledge`) is a
-  directory **tree** of markdown notes: one `<key>.md` per note, where the key
-  is a path (`work/project/topic`), plus per-folder `_map.md` descriptions and
-  a generated `index.md`. No taxonomy is prescribed — the nightly act stage
-  grows the structure the data justifies (a dev's bot and a doctor's bot grow
-  different trees). Notes cross-link as `[[key]]` (full path, or the final name
-  when unique — links survive moves).
-- **dream (reflect)** — a read-only pass (nightly at `NIGHTLY_HOUR`, or
-  `/dream`). It reviews the day's window against memory and the knowledge tree
-  and ends with **typed findings**: `memory-fix` and `knowledge` (applied
-  tonight), `reminder` (morning brief), `proposal` (operator-gated code/prompt
-  change), `idea`.
-- **grow (act)** — runs right after the dream, same night (or `/grow`). It
-  applies the mechanical findings: fixes thread memos and shared memory through
-  narrow tools, writes/merges/moves notes, curates folders and `_map.md`s, and
-  keeps the `[[link]]` report clean. Working directory = the knowledge tree, so
-  it can never touch the bot's source; changes land in the `grows` change-log
-  (`/grows`). Findings that ask for code changes are skipped and stay queued in
-  `/proposals` for a human.
-- **morning brief** — a default daily wakeup (`MORNING_HOUR`): the concierge
-  delivers pending reminders and a one-line "what changed overnight". The bot
-  owns the schedule — ask it to move or disable the brief.
-
-The knowledge directory is each deployment's own — it's git-ignored from this
-repo and persists on your machine (or a PVC), never in the framework.
-
----
-
-## 🎛️ Telegram UI tools
-
-The bot exposes a small MCP server so Claude can compose chat UI directly instead
-of only plain text:
-
-- **`send`** — a message in Telegram HTML with optional inline buttons.
-- **`ask`** — one quick question with tappable options; blocks for the answer.
-- **`askUserQuestion`** — up to four structured questions at once.
-
-A worker also has knowledge tools (`recallNotes` / `readNote` / `saveFinding`) so
-hard-won answers are saved once and reused, and a `setMemo` tool to keep its
-thread labeled.
-
----
-
-## ⚙️ Configuration
-
-All configuration is environment variables (see [`.env.example`](.env.example)):
-
-| Variable             | Required | Description                                                                 |
-| -------------------- | :------: | --------------------------------------------------------------------------- |
-| `TELEGRAM_BOT_TOKEN` |    ✅    | Bot token from @BotFather.                                                   |
-| `ALLOWED_CHAT_IDS`   |    ✅    | Comma-separated chat IDs allowed to use the bot. Empty = nobody.             |
-| `CLAUDE_WORKING_DIR` |    ✅    | Directory Claude Code operates in (its file-access root).                   |
-| `WORKSPACE_DIR`      |          | Root holding your cloned repos. Default: the parent of `CLAUDE_WORKING_DIR`. |
-| `PERMISSION_MODE`    |          | Default mode for worker tools (`default` · `acceptEdits` · `auto`).         |
-| `CLAUDE_MODEL`       |          | Model override, e.g. `claude-opus-4-8`. Empty = SDK/CLI default.            |
-| `KNOWLEDGE_DIR`      |          | Git-tracked knowledge base. Default `data/knowledge`.                       |
-| `NIGHTLY_HOUR`       |          | Hour (0–23) to run the nightly dream → grow pipeline. Default `4`.          |
-| `MORNING_HOUR`       |          | Hour (0–23) for the default morning-brief wakeup. Default `8`.              |
-| `SYSTEM_PROMPT_PATH` |          | Path to the dynamic system prompt. Default `prompts/system.md`.             |
-| `DB_PATH`            |          | SQLite path. Default `data/companion.db`.                                    |
-
-The system prompt in `prompts/system.md` is re-read every turn — edit it anytime,
-no restart.
-
----
-
-## 🔒 Security
-
-A bot token is effectively public, and this bot runs tools on your machine. Two
-things keep that safe:
-
-1. **Allowlist** — only chats in `ALLOWED_CHAT_IDS` are served; everyone else is
-   refused. Keep it tight.
-2. **Permission mode** — start workers on **Ask each** or **Accept edits** and
-   only move to **Auto** for workspaces you trust.
-
-`.env` and `data/` (your SQLite + knowledge base) are git-ignored. Never commit
-your token or your instance's knowledge.
-
----
-
-## 🗂️ Project structure
-
-```
-src/
-├── index.ts          entry point — boot, nightly scheduler, graceful shutdown
-├── transport/
-│   ├── types.ts      the ChatAdapter contract (transport-agnostic)
-│   └── telegram.ts   Telegram adapter: grammy runner, events, outbound API
-├── dispatch.ts       the transport-agnostic core: turns, routing, commands
-├── sessions.ts       worker views, per-turn visibility, status badges
-├── concierge.ts      the concierge agent + its bot-management tools
-├── claude.ts         Claude Agent SDK wrapper (normalizes events)
-├── permissions.ts    inline Allow/Deny/Always-allow tool gating
-├── ui.ts             Telegram UI tools (send / ask / knowledge tools)
-├── liveStatus.ts     the self-editing live status message
-├── format.ts         Markdown/HTML formatting + tool summaries
-├── db.ts             SQLite schema + queries (the firehose)
-├── knowledge.ts      the knowledge tree (path keys, folders, links, index)
-├── dream.ts          nightly reflect stage → dream report + typed findings
-├── grow.ts           nightly act stage (findings → memory + knowledge edits)
-├── wakeups.ts        self-scheduled wakeups (incl. the morning brief)
-├── digest.ts         digest a document into knowledge notes
-├── workspace.ts      the workspace repo registry
-└── config.ts         env-var configuration
-```
-
-The chat surface is chosen in one place (`index.ts`). The core talks only to a
-`ChatAdapter`, so a second transport (e.g. Slack) is a new adapter, not a rewrite.
-
----
-
-## 🤝 Contributing
-
-Issues and pull requests are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
-In short: fork, branch, `npm run typecheck`, open a PR against `main`.
-
-## 📄 License
+## License
 
 [MIT](LICENSE) © Mehdi

@@ -1,50 +1,37 @@
 # Contributing
 
-Thanks for your interest in `ai-companion`! Issues and pull requests are
-welcome.
+`ai-companion` is a research system with one operator (see the
+[README](README.md)). Issues, questions and pull requests are welcome; the
+bar for a change is the same one its maintainer works to.
+
+## Before you propose a change
+
+Read [docs/CHARTER.md](docs/CHARTER.md). Every change names the invariant it
+serves or the milestone it advances, and a new idea answers the Charter's four
+questions — which invariant, which milestone, what does it delete, how will we
+know it worked. A good issue usually reads like a row in
+[docs/DECISIONS.md](docs/DECISIONS.md).
 
 ## Reporting issues
 
-Open an [issue](https://github.com/m3di/ai-companion/issues) with:
-
-- what you expected vs. what happened,
-- steps to reproduce,
-- your OS, Node version, and anything relevant from the bot logs (with the
-  token redacted).
+Open an [issue](https://github.com/m3di/ai-companion/issues) with what you
+expected, what happened, and the steps. Output from `npx tsx src/vitalsCli.ts`
+or `src/auditCli.ts` helps — **redact it first**: it prints your instance's
+own entity names and messages.
 
 ## Pull requests
 
-1. **Fork** the repo and create a branch off `main`.
-2. Make your change. Keep it focused — small, single-purpose PRs are easiest to
-   review.
-3. **Type-check** before pushing:
+1. Branch off `main`; keep the change small and single-purpose.
+2. Run the gate:
    ```bash
-   npm install
    npm run typecheck
+   npm test
    ```
-4. Match the surrounding style: TypeScript, ES modules, and the existing naming
-   and comment conventions. Prefer clear code over cleverness.
-5. Open a PR against `main` describing the change and why. Link any related
-   issue.
-
-A maintainer will review and merge. `main` is protected against force-pushes and
-deletion, so history stays clean.
-
-## Local development
-
-```bash
-cp .env.example .env   # fill in token, allowed chat id, working dir
-npm run dev            # watch mode
-```
-
-See the [README](README.md) for full setup and configuration.
-
-## Scope & conventions
-
-- This is a thin, local bridge between Telegram and Claude Code — features
-  should keep that "small, runs on your laptop, no extra infra" spirit.
-- State lives in SQLite (`src/db.ts`); the multi-session model and bottom
-  keyboard live in `src/sessions.ts`. Skim those before larger changes.
-
-By contributing, you agree that your contributions are licensed under the
-project's [MIT License](LICENSE).
+   `npm test` runs against a snapshot of your instance's database; on a fresh
+   clone a few state-reading tests fail by design (README → Tests). Say which
+   ones in the PR.
+3. Match the surrounding style: TypeScript ES modules, and comments that say
+   *why* — usually the incident that made the rule necessary.
+4. Add a dated entry to [docs/CHANGELOG.md](docs/CHANGELOG.md).
+5. Never commit `.env`, `data/`, or anything from a real instance — names,
+   messages, entity ids.

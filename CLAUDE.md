@@ -7,8 +7,9 @@ a nightly operator that maintains it, and the **Atlas** — a live graph view.
 ## Read this first
 
 **[docs/CHARTER.md](docs/CHARTER.md) — the Charter.** It fixes the destination
-(*the Colleague*), the invariants, the open shape forks, and the milestones.
-**Read it at the start of every session, before proposing or building anything.**
+(*the Colleague*), the invariants, the open shape forks, and the milestones —
+with a dated *Where it stands* table read from the machine. **Read it at the
+start of every session, before proposing or building anything.**
 
 **Start every session by reading the machine, not the docs:**
 
@@ -33,15 +34,18 @@ Working rules that follow from it:
   was the live database being deleted, three hours before anyone looked. An
   anomaly narrated is an anomaly missed — the human version of Charter I8.
 - **Take one small step per session**, inside the current milestone, and add a
-  dated line to the Charter's changelog. The system runs live between sessions —
+  dated entry to [docs/CHANGELOG.md](docs/CHANGELOG.md). The system runs live between sessions —
   each step should survive a night of real use before the next lands.
 - **Every change names the invariant it serves or the milestone it advances.**
   A change that serves neither is a bug fix, or it doesn't belong yet.
 - **Run every new idea through the Charter's idea test** (which invariant? which
   milestone? what does it delete? how will we know it worked?) and log the
-  verdict in *Ideas measured* — including rejections, with the reason.
+  verdict in [docs/DECISIONS.md](docs/DECISIONS.md) — including rejections,
+  with the reason.
 - **Never break an invariant silently.** Each was bought with a real failure. If
   one has to give, amend the Charter first, in its own commit.
+- **When a milestone moves, update its row** in the Charter's *Where it stands*
+  table, dated, from the numbers — never from memory.
 
 ## Operator mode — working on the machine instead of with it
 
@@ -138,7 +142,7 @@ A **design proposal** is how a conversation with the bot ("the morning
 routine no longer works for me") or a night's friction becomes work for the
 developer. It is a row, not a file: the day and the night open it, attach
 evidence and amend it; **only a developer session decides**, and the decision
-writes the Charter's *Ideas measured* table. `auditCli` lists what is open.
+writes the *Ideas measured* table in `docs/DECISIONS.md`. `auditCli` lists what is open.
 
 ```bash
 npx tsx src/proposalCli.ts                 # open / accepted / landed
@@ -157,15 +161,18 @@ The Atlas (`ATLAS_PORT` in `.env`) halos every node a write touches, live, from
 any process — a write, its run, and the whole attempt on close. `/api/mode`,
 `/api/runs` and `/api/vitals` are the same data for anything else that wants it.
 
-## The other docs
+## The docs
 
-- [docs/history/BRAIN.md](docs/history/BRAIN.md) — the running design log: why we changed our
-  minds, round by round.
-- [docs/plans/round-*.md](docs/plans/) — per-round working plans. Round 12
-  (`round-12-the-body.md`, the Swift body as a second transport, M7) is the
-  live one; round 11 (the story tree) is landed; round 10's step 3 was M2.
-- [docs/history/ROADMAP.md](docs/history/ROADMAP.md) — the original phase plan. Historical;
-  superseded from round 10 by the Charter.
+| doc | what |
+|---|---|
+| [docs/CHARTER.md](docs/CHARTER.md) | what does not move: destination, invariants, forks, milestones |
+| [docs/DECISIONS.md](docs/DECISIONS.md) | every idea measured, with its verdict — `proposalCli` appends here |
+| [docs/CHANGELOG.md](docs/CHANGELOG.md) | one dated entry per step, newest first |
+| [docs/plans/](docs/plans/) | the live round only — round 12, the body (M7) |
+| [docs/history/](docs/history/) | BRAIN.md (the design log to 2026-08), ROADMAP.md, landed rounds 5–11 |
+
+A landed round's plan moves to `docs/history/plans/`; nothing else gets a new
+doc without a reason the Charter's idea test would accept.
 
 ## Layout
 
@@ -180,6 +187,17 @@ any process — a write, its run, and the whole attempt on close. `/api/mode`,
 | `src/knowledge.ts` | the md tree (being converged into the graph — M5) |
 | `web/`, `src/atlas.ts` | the Atlas — the operator's backdoor |
 | `data/knowledge/` | live instance data: `root.md` + per-domain entity files |
+
+## The repo is public
+
+`github.com/m3di/ai-companion` is public, and the live instance is personal.
+Changelog lines, comments, tests and prompt examples are written from real
+incidents, which is exactly how real data leaks in. Never write a real
+person, client, employer, entity id, place, health or legal detail into a
+tracked file — use the fictional stand-ins the docs already use (`acme`,
+`core-api`, `affiliate-app`, `paperwork/`, Nora, Sasha, Iris …). The
+machine's own output (`auditCli`, `cycleCli`) is full of live data; quote its
+numbers, never its names. Before pushing, scan `git diff origin/main` for them.
 
 ## Before you finish
 
